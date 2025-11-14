@@ -40,9 +40,12 @@ def login_session(username, password):
 
         # FIX: Try JSON safely
         try:
-            j = res.json()
-        except:
-            return None, "invalid_response"
+    j = res.json()
+    print("Samvidha response:", j)
+except:
+    print("Non-JSON response:", res.text[:300])
+    return None, "invalid_response"
+
 
     except Exception as e:
         print("LOGIN ERROR:", e)
@@ -206,4 +209,5 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
