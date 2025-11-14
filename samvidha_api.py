@@ -28,25 +28,32 @@ def login_session(username, password):
     }
 
     try:
-        # CORRECT FIELD NAMES FOR SAMVIDHA ↓↓↓
         res = session.post(
             LOGIN_URL,
-            data={"txt_uname": username, "txt_pwd": password},
+            data={
+                "username": username, 
+                "password": password
+            },
             headers=headers,
-            timeout=15
+            timeout=20
         )
 
-        j = res.json()
+        # FIX: Try JSON safely
+        try:
+            j = res.json()
+        except:
+            return None, "invalid_response"
 
     except Exception as e:
-        print("Login Error:", e)
+        print("LOGIN ERROR:", e)
         return None, "server_error"
 
-    # Samvidha success = status "1"
+    # SUCCESS CHECK
     if j.get("status") == "1":
         return session, None
     else:
         return None, "invalid_credentials"
+
 
 
 # -------------------------------------------------------------------
@@ -199,3 +206,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
