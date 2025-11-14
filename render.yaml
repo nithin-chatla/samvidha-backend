@@ -7,3 +7,8 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn samvidha_api:app
     autoDeploy: true
+cronJobs:
+  - name: keep-alive
+    schedule: "*/5 * * * *"  # every 5 minutes
+    url: https://samvidha-backend.onrender.com/
+
