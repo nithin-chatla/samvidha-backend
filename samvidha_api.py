@@ -11,12 +11,13 @@ CORS(app)
 BASE = "https://samvidha.iare.ac.in"
 LOGIN_URL = BASE + "/pages/login/checkUser.php"
 
-# In-memory storage (for Render free tier)
+# In-memory storage
 TOKENS = {}
 SESSIONS = {}
 
+
 # -------------------------------------------------------------------
-# LOGIN FUNCTION
+# LOGIN SESSION
 # -------------------------------------------------------------------
 def login_session(username, password):
     session = requests.Session()
@@ -27,14 +28,21 @@ def login_session(username, password):
     }
 
     try:
-        res = session.post(LOGIN_URL,
-                           data={"username": username, "password": password},
-                           headers=headers,
-                           timeout=15)
+        # CORRECT FIELD NAMES FOR SAMVIDHA ↓↓↓
+        res = session.post(
+            LOGIN_URL,
+            data={"txt_uname": username, "txt_pwd": password},
+            headers=headers,
+            timeout=15
+        )
+
         j = res.json()
-    except:
+
+    except Exception as e:
+        print("Login Error:", e)
         return None, "server_error"
 
+    # Samvidha success = status "1"
     if j.get("status") == "1":
         return session, None
     else:
@@ -42,7 +50,7 @@ def login_session(username, password):
 
 
 # -------------------------------------------------------------------
-# HELPERS FOR TABLE EXTRACTION
+# HELPERS
 # -------------------------------------------------------------------
 def find_table_with_keywords(soup, keywords):
     for table in soup.find_all("table"):
@@ -71,17 +79,14 @@ def table_to_json(table):
 # SCRAPERS
 # -------------------------------------------------------------------
 def scrape_attendance(session):
-    url = BASE + "/home?action=stud_att_STD"
-    r = session.get(url, timeout=15)
+    r = session.get(BASE + "/home?action=stud_att_STD", timeout=15)
     soup = BeautifulSoup(r.text, "lxml")
-
     table = find_table_with_keywords(soup, ["Attendance %"])
     return table_to_json(table)
 
 
 def scrape_midmarks(session):
-    url = BASE + "/home?action=cie_marks_ug"
-    r = session.get(url, timeout=15)
+    r = session.get(BASE + "/home?action=cie_marks_ug", timeout=15)
     soup = BeautifulSoup(r.text, "lxml")
 
     theory_table = find_table_with_keywords(soup, ["CIE-I", "Total Marks"])
@@ -94,8 +99,7 @@ def scrape_midmarks(session):
 
 
 def scrape_profile(session):
-    url = BASE + "/home?action=profile"
-    r = session.get(url, timeout=15)
+    r = session.get(BASE + "/home?action=profile", timeout=15)
     soup = BeautifulSoup(r.text, "lxml")
 
     profile = {}
@@ -111,7 +115,7 @@ def scrape_profile(session):
 
 
 # -------------------------------------------------------------------
-# AUTH TOKEN CHECK
+# TOKEN AUTH
 # -------------------------------------------------------------------
 def require_token():
     h = request.headers.get("Authorization", "")
@@ -132,6 +136,8 @@ def require_token():
 @app.route("/login", methods=["POST"])
 def api_login():
     data = request.get_json() or {}
+
+    # FRONTEND sends: { username, password }
     username = data.get("username")
     password = data.get("password")
 
@@ -177,26 +183,19 @@ def api_profile():
 def api_all():
     token = require_token()
     session = SESSIONS[token]
-    att = scrape_attendance(session)
-    mm = scrape_midmarks(session)
-    prof = scrape_profile(session)
 
     return jsonify({
         "ok": True,
-        "attendance": att,
-        "midmarks": mm,
-        "profile": prof
+        "attendance": scrape_attendance(session),
+        "midmarks": scrape_midmarks(session),
+        "profile": scrape_profile(session)
     })
 
-
-# -------------------------------------------------------------------
 
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"status": "Samvidha API is running"})
 
-
-# -------------------------------------------------------------------
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
