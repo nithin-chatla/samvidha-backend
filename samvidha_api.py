@@ -21,42 +21,53 @@ SESSIONS = {}
 # -------------------------------------------------------------------
 def login_session(username, password):
     session = requests.Session()
+
+    # HEADERS EXACTLY LIKE YOUR BROWSER
     headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Origin": BASE,
-        "Referer": BASE + "/index",
+        "Host": "samvidha.iare.ac.in",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Origin": "https://samvidha.iare.ac.in",
+        "Referer": "https://samvidha.iare.ac.in/",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+
+    # EXACT FORM FIELDS YOU SHOWED IN SCREENSHOT
+    payload = {
+        "username": username,
+        "password": password
     }
 
     try:
         res = session.post(
             LOGIN_URL,
-            data={
-                "username": username, 
-                "password": password
-            },
+            data=payload,
             headers=headers,
             timeout=20
         )
 
-        # FIX: Try JSON safely
-        try:
-    j = res.json()
-    print("Samvidha response:", j)
-except:
-    print("Non-JSON response:", res.text[:300])
-    return None, "invalid_response"
+        print("\n======= RAW RESPONSE FROM SAMVIDHA =======")
+        print(res.text)
+        print("==========================================\n")
 
+        try:
+            j = res.json()
+        except:
+            print("NOT JSON:", res.text[:300])
+            return None, "invalid_response"
+
+        if j.get("status") == "1":
+            print("LOGIN SUCCESS")
+            return session, None
+
+        print("LOGIN FAILED:", j)
+        return None, "invalid_credentials"
 
     except Exception as e:
         print("LOGIN ERROR:", e)
-        return None, "server_error"
-
-    # SUCCESS CHECK
-    if j.get("status") == "1":
-        return session, None
-    else:
-        return None, "invalid_credentials"
-
+        return None, "network_error"
 
 
 # -------------------------------------------------------------------
@@ -209,5 +220,6 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
