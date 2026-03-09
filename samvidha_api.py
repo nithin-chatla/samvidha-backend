@@ -1,4 +1,5 @@
 import requests
+import os
 from flask import Flask, request, jsonify, abort
 from flask_cors import CORS
 from bs4 import BeautifulSoup
@@ -94,13 +95,15 @@ def table_to_json(table):
 # -------------------------------------------------------------------
 def scrape_attendance(session):
     r = session.get(BASE + "/home?action=stud_att_STD", timeout=15)
-    soup = BeautifulSoup(r.text, "lxml")
+    # Using html.parser instead of lxml to prevent build errors on Render
+    soup = BeautifulSoup(r.text, "html.parser")
     table = find_table_with_keywords(soup, ["Attendance %"])
     return table_to_json(table)
 
 def scrape_midmarks(session):
     r = session.get(BASE + "/home?action=cie_marks_ug", timeout=15)
-    soup = BeautifulSoup(r.text, "lxml")
+    # Using html.parser instead of lxml to prevent build errors on Render
+    soup = BeautifulSoup(r.text, "html.parser")
 
     # We grab all rows from the page to handle complex spanning headers
     rows = soup.find_all("tr")
@@ -152,7 +155,8 @@ def scrape_midmarks(session):
 
 def scrape_profile(session):
     r = session.get(BASE + "/home?action=profile", timeout=15)
-    soup = BeautifulSoup(r.text, "lxml")
+    # Using html.parser instead of lxml to prevent build errors on Render
+    soup = BeautifulSoup(r.text, "html.parser")
 
     profile = {}
     for table in soup.find_all("table"):
@@ -242,4 +246,6 @@ def home():
     return jsonify({"status": "Samvidha API is running"})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    # Render assigns a dynamic port, so we read it from the environment here.
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
