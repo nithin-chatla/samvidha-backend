@@ -15,7 +15,6 @@ LOGIN_URL = BASE + "/pages/login/checkUser.php"
 TOKENS = {}
 SESSIONS = {}
 
-
 # -------------------------------------------------------------------
 # LOGIN SESSION
 # -------------------------------------------------------------------
@@ -34,7 +33,6 @@ def login_session(username, password):
         "X-Requested-With": "XMLHttpRequest",
     }
 
-    # EXACT FORM FIELDS YOU SHOWED IN SCREENSHOT
     payload = {
         "username": username,
         "password": password
@@ -47,10 +45,6 @@ def login_session(username, password):
             headers=headers,
             timeout=20
         )
-
-        print("\n======= RAW RESPONSE FROM SAMVIDHA =======")
-        print(res.text)
-        print("==========================================\n")
 
         try:
             j = res.json()
@@ -80,7 +74,6 @@ def find_table_with_keywords(soup, keywords):
             return table
     return None
 
-
 def table_to_json(table):
     if not table:
         return []
@@ -105,19 +98,57 @@ def scrape_attendance(session):
     table = find_table_with_keywords(soup, ["Attendance %"])
     return table_to_json(table)
 
-
 def scrape_midmarks(session):
     r = session.get(BASE + "/home?action=cie_marks_ug", timeout=15)
     soup = BeautifulSoup(r.text, "lxml")
 
-    theory_table = find_table_with_keywords(soup, ["CIE-I", "Total Marks"])
-    lab_table = find_table_with_keywords(soup, ["Day to Day Marks", "Week 1"])
+    # We grab all rows from the page to handle complex spanning headers
+    rows = soup.find_all("tr")
+    
+    theory_data = []
+    lab_data = []
+    
+    current_mode = None  # Tracks if we are currently reading 'theory' or 'lab'
 
+    for row in rows:
+        text = row.get_text(strip=True).lower()
+        
+        # Detect which section we are in based on section headers
+        if "continuous internal assessment marks (theory)" in text:
+            current_mode = "theory"
+            continue
+        elif "laboratory marks (practical)" in text:
+            current_mode = "lab"
+            continue
+            
+        cols = row.find_all("td")
+        
+        # Valid data rows have many columns. Headers usually use 'th'.
+        if len(cols) > 5: 
+            if current_mode == "theory":
+                # Extracted according to the exact column layout in screenshot
+                theory_data.append({
+                    "Course Name": cols[2].get_text(strip=True),
+                    "CIE-I": cols[3].get_text(strip=True),
+                    "AAT:I-I": cols[4].get_text(strip=True),
+                    "AAT:I-II": cols[5].get_text(strip=True),
+                    "CIE-II": cols[6].get_text(strip=True),
+                    "AAT:II-I": cols[7].get_text(strip=True),
+                    "Total Marks": cols[-1].get_text(strip=True) # Always grabs the last column
+                })
+            elif current_mode == "lab":
+                lab_data.append({
+                    "Course Name": cols[2].get_text(strip=True),
+                    "Week 1": cols[3].get_text(strip=True),
+                    "Week 2": cols[4].get_text(strip=True),
+                    "Week 3": cols[5].get_text(strip=True),
+                    "Marks": cols[-1].get_text(strip=True)
+                })
+                
     return {
-        "theory": table_to_json(theory_table),
-        "laboratory": table_to_json(lab_table)
+        "theory": theory_data,
+        "laboratory": lab_data
     }
-
 
 def scrape_profile(session):
     r = session.get(BASE + "/home?action=profile", timeout=15)
@@ -153,12 +184,10 @@ def require_token():
 # -------------------------------------------------------------------
 # API ROUTES
 # -------------------------------------------------------------------
-
 @app.route("/login", methods=["POST"])
 def api_login():
     data = request.get_json() or {}
 
-    # FRONTEND sends: { username, password }
     username = data.get("username")
     password = data.get("password")
 
@@ -175,14 +204,12 @@ def api_login():
 
     return jsonify({"ok": True, "token": token})
 
-
 @app.route("/attendance", methods=["GET"])
 def api_attendance():
     token = require_token()
     session = SESSIONS[token]
     data = scrape_attendance(session)
     return jsonify({"ok": True, "attendance": data})
-
 
 @app.route("/midmarks", methods=["GET"])
 def api_midmarks():
@@ -191,14 +218,12 @@ def api_midmarks():
     data = scrape_midmarks(session)
     return jsonify({"ok": True, "midmarks": data})
 
-
 @app.route("/profile", methods=["GET"])
 def api_profile():
     token = require_token()
     session = SESSIONS[token]
     data = scrape_profile(session)
     return jsonify({"ok": True, "profile": data})
-
 
 @app.route("/all", methods=["GET"])
 def api_all():
@@ -212,14 +237,9 @@ def api_all():
         "profile": scrape_profile(session)
     })
 
-
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"status": "Samvidha API is running"})
 
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
-
-
