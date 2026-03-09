@@ -144,50 +144,64 @@ def scrape_midmarks(session):
         theory_data = []
         lab_data = []
         current_mode = None 
-        current_sem = "Current Semester" # Default track
+        current_sem = "Current Semester"
 
         for row in rows:
             text = row.get_text(strip=True).lower()
             
-            # Detect the semester header (usually spans across the table)
-            if "semester" in text and len(row.find_all(["th", "td"])) <= 3:
-                # Ignore standard headers that might randomly contain the word
-                if "course" not in text and "marks" not in text:
-                    current_sem = row.get_text(strip=True).replace(":", "").strip()
-                    continue
-
+            # 1. Detect Semester Names properly
+            if "semester -" in text:
+                for cell in row.find_all(["th", "td"]):
+                    cell_text = cell.get_text(strip=True)
+                    if "semester -" in cell_text.lower():
+                        current_sem = cell_text
+                        break
+                        
+            # 2. Detect Mode (Theory vs Lab)
             if "continuous internal assessment marks (theory)" in text:
                 current_mode = "theory"
                 continue
-            elif "laboratory marks (practical)" in text:
+            elif "laboratory marks (practical)" in text or "seminar marks" in text:
                 current_mode = "lab"
                 continue
                 
             cols = row.find_all("td")
             
-            # Use safer indexing to support branches with fewer AAT exams
-            if len(cols) >= 6 and current_mode == "theory":
+            # 3. Scrape ALL Theory sections (CIE 1/2, AAT 1/2/3/4)
+            if len(cols) >= 10 and current_mode == "theory":
                 if not cols[0].get_text(strip=True).isdigit(): continue
                 theory_data.append({
                     "Semester": current_sem,
                     "Course Name": cols[2].get_text(strip=True),
-                    "CIE-I": cols[3].get_text(strip=True) if len(cols) > 3 else "-",
-                    "AAT:I-I": cols[4].get_text(strip=True) if len(cols) > 4 else "-",
-                    "AAT:I-II": cols[5].get_text(strip=True) if len(cols) > 5 else "-",
-                    "CIE-II": cols[6].get_text(strip=True) if len(cols) > 6 else "-",
-                    "AAT:II-I": cols[7].get_text(strip=True) if len(cols) > 7 else "-",
-                    "Total Marks": cols[-1].get_text(strip=True) # Always grabs the very last column
+                    "CIE-I": cols[3].get_text(strip=True),
+                    "AAT:I-I": cols[4].get_text(strip=True),
+                    "AAT:I-II": cols[5].get_text(strip=True),
+                    "CIE-II": cols[6].get_text(strip=True),
+                    "AAT:II-I": cols[7].get_text(strip=True),
+                    "AAT:II-II": cols[8].get_text(strip=True),
+                    "Total Marks": cols[-1].get_text(strip=True)
                 })
-            elif len(cols) >= 4 and current_mode == "lab":
+                
+            # 4. Scrape ALL Lab weeks dynamically
+            elif len(cols) >= 5 and current_mode == "lab":
                 if not cols[0].get_text(strip=True).isdigit(): continue
+                
+                week_marks = []
+                # Extract every week's marks found in the middle columns
+                for i in range(3, len(cols) - 2): 
+                    val = cols[i].get_text(strip=True)
+                    if val: week_marks.append(val)
+
                 lab_data.append({
                     "Semester": current_sem,
                     "Course Name": cols[2].get_text(strip=True),
-                    "Week 1": cols[3].get_text(strip=True) if len(cols) > 3 else "-",
-                    "Marks": cols[-1].get_text(strip=True) # Always grabs the very last column
+                    "Weeks": week_marks, # Will send a list of all active weeks to Flutter
+                    "Exam Marks": cols[-2].get_text(strip=True),
+                    "Marks": cols[-1].get_text(strip=True)
                 })
         return {"theory": theory_data, "laboratory": lab_data}
-    except:
+    except Exception as e:
+        print(f"Midmarks Scrape Error: {e}")
         return {"theory": [], "laboratory": []}
 
 def scrape_profile(session):
