@@ -144,9 +144,18 @@ def scrape_midmarks(session):
         theory_data = []
         lab_data = []
         current_mode = None 
+        current_sem = "Current Semester" # Default track
 
         for row in rows:
             text = row.get_text(strip=True).lower()
+            
+            # Detect the semester header (usually spans across the table)
+            if "semester" in text and len(row.find_all(["th", "td"])) <= 3:
+                # Ignore standard headers that might randomly contain the word
+                if "course" not in text and "marks" not in text:
+                    current_sem = row.get_text(strip=True).replace(":", "").strip()
+                    continue
+
             if "continuous internal assessment marks (theory)" in text:
                 current_mode = "theory"
                 continue
@@ -160,6 +169,7 @@ def scrape_midmarks(session):
             if len(cols) >= 6 and current_mode == "theory":
                 if not cols[0].get_text(strip=True).isdigit(): continue
                 theory_data.append({
+                    "Semester": current_sem,
                     "Course Name": cols[2].get_text(strip=True),
                     "CIE-I": cols[3].get_text(strip=True) if len(cols) > 3 else "-",
                     "AAT:I-I": cols[4].get_text(strip=True) if len(cols) > 4 else "-",
@@ -171,6 +181,7 @@ def scrape_midmarks(session):
             elif len(cols) >= 4 and current_mode == "lab":
                 if not cols[0].get_text(strip=True).isdigit(): continue
                 lab_data.append({
+                    "Semester": current_sem,
                     "Course Name": cols[2].get_text(strip=True),
                     "Week 1": cols[3].get_text(strip=True) if len(cols) > 3 else "-",
                     "Marks": cols[-1].get_text(strip=True) # Always grabs the very last column
