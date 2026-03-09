@@ -188,7 +188,7 @@ def require_token():
 # -------------------------------------------------------------------
 # API ROUTES
 # -------------------------------------------------------------------
-@app.route("/login", methods=["POST"])
+@app.route("/login", methods=["POST"], strict_slashes=False)
 def api_login():
     data = request.get_json() or {}
 
@@ -208,28 +208,28 @@ def api_login():
 
     return jsonify({"ok": True, "token": token})
 
-@app.route("/attendance", methods=["GET"])
+@app.route("/attendance", methods=["GET"], strict_slashes=False)
 def api_attendance():
     token = require_token()
     session = SESSIONS[token]
     data = scrape_attendance(session)
     return jsonify({"ok": True, "attendance": data})
 
-@app.route("/midmarks", methods=["GET"])
+@app.route("/midmarks", methods=["GET"], strict_slashes=False)
 def api_midmarks():
     token = require_token()
     session = SESSIONS[token]
     data = scrape_midmarks(session)
     return jsonify({"ok": True, "midmarks": data})
 
-@app.route("/profile", methods=["GET"])
+@app.route("/profile", methods=["GET"], strict_slashes=False)
 def api_profile():
     token = require_token()
     session = SESSIONS[token]
     data = scrape_profile(session)
     return jsonify({"ok": True, "profile": data})
 
-@app.route("/all", methods=["GET"])
+@app.route("/all", methods=["GET"], strict_slashes=False)
 def api_all():
     token = require_token()
     session = SESSIONS[token]
@@ -241,7 +241,7 @@ def api_all():
         "profile": scrape_profile(session)
     })
 
-@app.route("/", methods=["GET"])
+@app.route("/", methods=["GET"], strict_slashes=False)
 def home():
     return jsonify({"status": "Samvidha API is running"})
 
