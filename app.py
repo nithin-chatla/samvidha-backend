@@ -46,34 +46,6 @@ def login_session(username, password):
         return None, "network_error"
 
 # -------------------------------------------------------------------
-# HELPERS
-# -------------------------------------------------------------------
-def find_table_with_keywords(soup, keywords):
-    for table in soup.find_all("table"):
-        if all(word in table.get_text() for word in keywords):
-            return table
-    return None
-
-def table_to_json(table):
-    if not table: return []
-    rows = []
-    headers = [th.get_text(strip=True) for th in table.find_all("th")]
-    
-    all_trs = table.find_all("tr")
-    if not headers and all_trs:
-        headers = [td.get_text(strip=True) for td in all_trs[0].find_all("td")]
-        all_trs = all_trs[1:]
-    
-    for tr in all_trs:
-        cols = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-        if len(cols) == len(headers) and len(headers) > 0:
-            if cols == headers: continue
-            rows.append(dict(zip(headers, cols)))
-        elif len(cols) > 0 and not headers:
-            rows.append({"data": cols})
-    return rows
-
-# -------------------------------------------------------------------
 # SCRAPERS
 # -------------------------------------------------------------------
 def scrape_attendance(session):
@@ -175,53 +147,52 @@ def scrape_profile(session):
             "Documents": {}
         }
         
-        # Capture Top Header Card Info
-        header_card = soup.find("div", class_="card-body")
+        # 1. Grab Name/Branch Headers robustly
+        header_card = soup.find("div", class_=["card-body", "panel-body", "profile-user-info"])
         if header_card:
-            name = header_card.find(["h3", "h4"])
+            name = header_card.find(["h3", "h4", "h5", "strong"])
             if name: profile["Header"]["Full Name"] = name.get_text(strip=True)
             branch = header_card.find(["h5", "p"])
             if branch: profile["Header"]["Department"] = branch.get_text(strip=True)
 
-        # Scrape all detail sections (General, Admin, Marks, Progress)
-        for card in soup.find_all("div", class_="card"):
-            header = card.find("div", class_="card-header")
-            section_name = header.get_text(strip=True) if header else "Other Details"
-            
-            # Avoid the header profile card itself
-            if "card-body" in card.get("class", []) and not header:
-                continue
-                
-            table = card.find("table")
-            if table:
-                section_data = {}
-                for tr in table.find_all("tr"):
-                    cells = tr.find_all(["th", "td"])
-                    if len(cells) == 2:
-                        key = cells[0].get_text(strip=True).replace(":", "").strip()
-                        
-                        # Check for Downloadable Links/Documents (10th, Inter, Aadhar etc)
-                        link = cells[1].find("a", href=True)
-                        if link:
-                            href = link["href"]
-                            # Convert relative links to absolute
-                            if href.startswith("/"): href = BASE + href
-                            elif not href.startswith("http"): href = BASE + "/" + href
-                            profile["Documents"][key] = href
-                        else:
-                            val = cells[1].get_text(strip=True)
-                            if key and val:
-                                section_data[key] = val
-                
-                if section_data:
-                    profile["Sections"][section_name] = section_data
+        # 2. Iterate ALL tables to prevent missing data in different layouts
+        for table in soup.find_all("table"):
+            # Try to identify the table's section name
+            section_title = "General Details"
+            prev_header = table.find_previous(["div", "h3", "h4", "h5", "h6"], class_=["card-header", "panel-heading", "box-header", "bg-primary"])
+            if prev_header and prev_header.get_text(strip=True):
+                section_title = prev_header.get_text(strip=True)
 
-        # Explicitly pull Roll Number into Header to help the Flutter App get the Image
-        for sec, data in profile.get("Sections", {}).items():
-            for k, v in data.items():
-                if "roll number" in k.lower() or "rollno" in k.lower():
-                    profile["Header"]["Roll Number"] = v
-                    break
+            if section_title not in profile["Sections"]:
+                profile["Sections"][section_title] = {}
+
+            # Process every row in the table
+            for tr in table.find_all("tr"):
+                cells = tr.find_all(["th", "td"])
+                if len(cells) >= 2:
+                    key = cells[0].get_text(strip=True).replace(":", "").strip()
+                    val_elem = cells[1]
+                    
+                    # Look for downloadable Document Links
+                    link = val_elem.find("a", href=True)
+                    if link:
+                        href = link["href"]
+                        if href.startswith("/"): href = BASE + href
+                        elif not href.startswith("http"): href = BASE + "/" + href
+                        profile["Documents"][key] = href
+                    else:
+                        val = val_elem.get_text(strip=True)
+                        if key and val:
+                            profile["Sections"][section_title][key] = val
+                            
+                            # Fallback: Capture Roll Number wherever it appears to ensure the photo loads
+                            if "roll number" in key.lower() or "rollno" in key.lower():
+                                profile["Header"]["Roll Number"] = val
+                            # Fallback: Capture name/branch if it wasn't at the top of the page
+                            if "name" in key.lower() and "father" not in key.lower() and "mother" not in key.lower() and "Full Name" not in profile["Header"]:
+                                profile["Header"]["Full Name"] = val
+                            if "branch" in key.lower() and "Department" not in profile["Header"]:
+                                profile["Header"]["Department"] = val
 
         return profile
     except Exception as e:
