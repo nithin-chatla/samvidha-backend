@@ -12,7 +12,6 @@ CORS(app)
 BASE = "https://samvidha.iare.ac.in"
 LOGIN_URL = BASE + "/pages/login/checkUser.php"
 
-# In-memory storage
 TOKENS = {}
 SESSIONS = {}
 
@@ -21,31 +20,19 @@ SESSIONS = {}
 # -------------------------------------------------------------------
 def login_session(username, password):
     session = requests.Session()
-
     headers = {
         "Host": "samvidha.iare.ac.in",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Accept-Language": "en-US,en;q=0.9",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Origin": "https://samvidha.iare.ac.in",
-        "Referer": "https://samvidha.iare.ac.in/",
+        "Origin": BASE,
+        "Referer": BASE + "/",
         "X-Requested-With": "XMLHttpRequest",
     }
-
-    payload = {
-        "username": username,
-        "password": password
-    }
+    payload = {"username": username, "password": password}
 
     try:
-        res = session.post(
-            LOGIN_URL,
-            data=payload,
-            headers=headers,
-            timeout=20
-        )
-
+        res = session.post(LOGIN_URL, data=payload, headers=headers, timeout=20)
         try:
             j = res.json()
         except:
@@ -54,27 +41,21 @@ def login_session(username, password):
         if j.get("status") == "1":
             print(f"LOGIN SUCCESS: {username}")
             return session, None
-
         return None, "invalid_credentials"
-
     except Exception as e:
         return None, "network_error"
-
 
 # -------------------------------------------------------------------
 # HELPERS
 # -------------------------------------------------------------------
 def find_table_with_keywords(soup, keywords):
     for table in soup.find_all("table"):
-        text = table.get_text()
-        if all(word in text for word in keywords):
+        if all(word in table.get_text() for word in keywords):
             return table
     return None
 
 def table_to_json(table):
-    if not table:
-        return []
-
+    if not table: return []
     rows = []
     headers = [th.get_text(strip=True) for th in table.find_all("th")]
     
@@ -90,9 +71,7 @@ def table_to_json(table):
             rows.append(dict(zip(headers, cols)))
         elif len(cols) > 0 and not headers:
             rows.append({"data": cols})
-
     return rows
-
 
 # -------------------------------------------------------------------
 # SCRAPERS
@@ -101,25 +80,15 @@ def scrape_attendance(session):
     try:
         r = session.get(BASE + "/home?action=stud_att_STD", timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
-        
         attendance_data = []
-        
-        # Search all tables for the exact attendance report format
         for table in soup.find_all("table"):
             text = table.get_text()
             if "Course Name" in text and "Attendance %" in text:
                 for tr in table.find_all("tr"):
                     cols = tr.find_all("td")
-                    
-                    # Safely handle different column counts across branches
                     if len(cols) >= 7:
                         s_no = cols[0].get_text(strip=True)
-                        
-                        if not s_no.isdigit():
-                            continue
-                            
-                        # Reading from the END of the list ensures we always get the right numbers 
-                        # even if a branch has extra columns like "Course Category"
+                        if not s_no.isdigit(): continue
                         attendance_data.append({
                             "Subject": cols[2].get_text(strip=True), 
                             "Course Code": cols[1].get_text(strip=True),
@@ -129,7 +98,6 @@ def scrape_attendance(session):
                             "Status": cols[-1].get_text(strip=True) 
                         })
                 break
-                
         return attendance_data
     except Exception as e:
         print(f"Scrape Attendance Error: {e}")
@@ -148,8 +116,6 @@ def scrape_midmarks(session):
 
         for row in rows:
             text = row.get_text(strip=True).lower()
-            
-            # 1. Detect Semester Names properly
             if "semester -" in text:
                 for cell in row.find_all(["th", "td"]):
                     cell_text = cell.get_text(strip=True)
@@ -157,7 +123,6 @@ def scrape_midmarks(session):
                         current_sem = cell_text
                         break
                         
-            # 2. Detect Mode (Theory vs Lab)
             if "continuous internal assessment marks (theory)" in text:
                 current_mode = "theory"
                 continue
@@ -167,7 +132,6 @@ def scrape_midmarks(session):
                 
             cols = row.find_all("td")
             
-            # 3. Scrape ALL Theory sections (CIE 1/2, AAT 1/2/3/4)
             if len(cols) >= 10 and current_mode == "theory":
                 if not cols[0].get_text(strip=True).isdigit(): continue
                 theory_data.append({
@@ -181,13 +145,9 @@ def scrape_midmarks(session):
                     "AAT:II-II": cols[8].get_text(strip=True),
                     "Total Marks": cols[-1].get_text(strip=True)
                 })
-                
-            # 4. Scrape ALL Lab weeks dynamically
             elif len(cols) >= 5 and current_mode == "lab":
                 if not cols[0].get_text(strip=True).isdigit(): continue
-                
                 week_marks = []
-                # Extract every week's marks found in the middle columns
                 for i in range(3, len(cols) - 2): 
                     val = cols[i].get_text(strip=True)
                     if val: week_marks.append(val)
@@ -195,7 +155,7 @@ def scrape_midmarks(session):
                 lab_data.append({
                     "Semester": current_sem,
                     "Course Name": cols[2].get_text(strip=True),
-                    "Weeks": week_marks, # Will send a list of all active weeks to Flutter
+                    "Weeks": week_marks,
                     "Exam Marks": cols[-2].get_text(strip=True),
                     "Marks": cols[-1].get_text(strip=True)
                 })
@@ -209,21 +169,29 @@ def scrape_profile(session):
         r = session.get(BASE + "/home?action=profile", timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
 
-        profile = {}
+        profile = {
+            "Header": {},
+            "Sections": {},
+            "Documents": {}
+        }
         
         # Capture Top Header Card Info
         header_card = soup.find("div", class_="card-body")
         if header_card:
             name = header_card.find(["h3", "h4"])
-            if name: profile["Full Name"] = name.get_text(strip=True)
+            if name: profile["Header"]["Full Name"] = name.get_text(strip=True)
             branch = header_card.find(["h5", "p"])
-            if branch: profile["Department"] = branch.get_text(strip=True)
+            if branch: profile["Header"]["Department"] = branch.get_text(strip=True)
 
         # Scrape all detail sections (General, Admin, Marks, Progress)
         for card in soup.find_all("div", class_="card"):
             header = card.find("div", class_="card-header")
             section_name = header.get_text(strip=True) if header else "Other Details"
             
+            # Avoid the header profile card itself
+            if "card-body" in card.get("class", []) and not header:
+                continue
+                
             table = card.find("table")
             if table:
                 section_data = {}
@@ -231,20 +199,34 @@ def scrape_profile(session):
                     cells = tr.find_all(["th", "td"])
                     if len(cells) == 2:
                         key = cells[0].get_text(strip=True).replace(":", "").strip()
-                        val = cells[1].get_text(strip=True)
-                        if key: section_data[key] = val
-                    elif len(cells) > 2:
-                        pass
+                        
+                        # Check for Downloadable Links/Documents (10th, Inter, Aadhar etc)
+                        link = cells[1].find("a", href=True)
+                        if link:
+                            href = link["href"]
+                            # Convert relative links to absolute
+                            if href.startswith("/"): href = BASE + href
+                            elif not href.startswith("http"): href = BASE + "/" + href
+                            profile["Documents"][key] = href
+                        else:
+                            val = cells[1].get_text(strip=True)
+                            if key and val:
+                                section_data[key] = val
                 
                 if section_data:
-                    for k, v in section_data.items():
-                        profile[f"{section_name} - {k}"] = v
+                    profile["Sections"][section_name] = section_data
+
+        # Explicitly pull Roll Number into Header to help the Flutter App get the Image
+        for sec, data in profile.get("Sections", {}).items():
+            for k, v in data.items():
+                if "roll number" in k.lower() or "rollno" in k.lower():
+                    profile["Header"]["Roll Number"] = v
+                    break
 
         return profile
     except Exception as e:
         print(f"Scrape Profile Error: {e}")
-        return {}
-
+        return {"Header": {}, "Sections": {}, "Documents": {}}
 
 # -------------------------------------------------------------------
 # API ROUTES
