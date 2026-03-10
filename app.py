@@ -137,14 +137,15 @@ def scrape_midmarks(session):
         print(f"Midmarks Scrape Error: {e}")
         return {"theory": [], "laboratory": []}
 
-def scrape_profile(session):
+def scrape_profile(session, username):
     try:
         r = session.get(BASE + "/home?action=profile", timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
 
-        profile = {"Header": {}, "Sections": {}, "Documents": {}}
+        # Guarantee the Roll Number exists by using the login username
+        profile = {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
         
-        # 1. Grab Name/Branch Headers robustly
+        # 1. Grab Name/Branch Headers
         header_card = soup.find("div", class_=lambda c: c and any(x in c.lower() for x in ['profile', 'user-info', 'card-body', 'panel-body']))
         if not header_card: header_card = soup
         name = header_card.find(["h3", "h4", "h5", "strong"])
@@ -152,23 +153,17 @@ def scrape_profile(session):
         branch = header_card.find(["h5", "p"])
         if branch: profile["Header"]["Department"] = branch.get_text(strip=True)
 
-        # 2. Iterate ALL tables intelligently
+        # 2. Iterate ALL tables with advanced preceding-header detection
         for i, table in enumerate(soup.find_all("table")):
             section_title = f"Details Section {i+1}"
             
-            # Check if first row is a title header (spans columns)
-            first_row = table.find("tr")
-            if first_row:
-                cells = first_row.find_all(["th", "td"])
-                if len(cells) == 1 and cells[0].get("colspan"):
-                    section_title = cells[0].get_text(strip=True)
-            
-            # Check parent container for a header text (e.g. "General")
-            if section_title.startswith("Details Section"):
-                parent = table.find_parent("div", class_=lambda c: c and any(x in c.lower() for x in ['panel', 'card', 'box']))
-                if parent:
-                    header = parent.find(["div", "h3", "h4", "h5"], class_=lambda c: c and any(x in c.lower() for x in ['heading', 'header', 'title']))
-                    if header: section_title = header.get_text(strip=True)
+            # Find the closest preceding header tag to accurately name the table (e.g., "General")
+            prev_header = table.find_previous(["h1", "h2", "h3", "h4", "h5", "h6", "div"], class_=lambda c: c and any(x in c.lower() for x in ['header', 'heading', 'title']))
+            if prev_header:
+                text = prev_header.get_text(strip=True)
+                # Ensure it's not grabbing a massive paragraph of text by mistake
+                if len(text) > 0 and len(text) < 40:
+                    section_title = text
 
             if section_title not in profile["Sections"]:
                 profile["Sections"][section_title] = {}
@@ -184,7 +179,7 @@ def scrape_profile(session):
                 # Smart Parsing: If 3 columns and first is a number (S.No), ignore S.No!
                 if len(cells) >= 3 and cells[0].get_text(strip=True).isdigit():
                     key = cells[1].get_text(strip=True).replace(":", "").strip()
-                    val_elem = cells[-1] # Usually the button is the last column
+                    val_elem = cells[-1] # Button is usually the last column
                 else:
                     key = cells[0].get_text(strip=True).replace(":", "").strip()
                     val_elem = cells[1]
@@ -206,28 +201,28 @@ def scrape_profile(session):
                     elif not href.startswith("http"): href = BASE + "/" + href
                     
                     doc_name = key
-                    # If the column has meaningful text like "EAMCET RANK", use that as the document name
                     if val_text and val_text.lower() not in ["view", "download", "click here", "-", ""]:
                         doc_name = val_text
                         
                     profile["Documents"][doc_name] = href
                 else:
-                    # Normal Text Data (Phone, Email, Aadhar)
+                    # Normal Text Data
                     if val_text and val_text.lower() not in ["view", "download", "-", ""]:
                         profile["Sections"][section_title][key] = val_text
                         
-                        # Aggressive Roll Number Hunter (for your Profile Photo!)
-                        if "roll number" in key.lower() or "rollno" in key.lower() or "htno" in key.lower():
-                            profile["Header"]["Roll Number"] = val_text
+                        if "name" in key.lower() and "father" not in key.lower() and "mother" not in key.lower() and "Full Name" not in profile["Header"]:
+                            profile["Header"]["Full Name"] = val_text
+                        if "branch" in key.lower() and "Department" not in profile["Header"]:
+                            profile["Header"]["Department"] = val_text
 
-        # Clean up any empty sections before sending to Flutter
+        # Clean up any empty sections
         empty_keys = [k for k, v in profile["Sections"].items() if not v]
         for k in empty_keys: del profile["Sections"][k]
 
         return profile
     except Exception as e:
         print(f"Scrape Profile Error: {e}")
-        return {"Header": {}, "Sections": {}, "Documents": {}}
+        return {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
 
 # -------------------------------------------------------------------
 # API ROUTES
@@ -251,11 +246,12 @@ def api_login():
 def api_all():
     token = require_token()
     session = SESSIONS[token]
+    username = TOKENS[token]["username"]  # Pass username for Guaranteed Roll Number
     return jsonify({
         "ok": True,
         "attendance": scrape_attendance(session),
         "midmarks": scrape_midmarks(session),
-        "profile": scrape_profile(session)
+        "profile": scrape_profile(session, username)
     })
 
 def require_token():
