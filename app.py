@@ -145,7 +145,7 @@ def scrape_profile(session, username):
         # Guarantee the Roll Number exists by using the login username
         profile = {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
         
-        # 1. Grab Name/Branch Headers
+        # 1. Grab Name/Branch Headers robustly
         header_card = soup.find("div", class_=lambda c: c and any(x in c.lower() for x in ['profile', 'user-info', 'card-body', 'panel-body']))
         if not header_card: header_card = soup
         name = header_card.find(["h3", "h4", "h5", "strong"])
@@ -157,13 +157,21 @@ def scrape_profile(session, username):
         for i, table in enumerate(soup.find_all("table")):
             section_title = f"Details Section {i+1}"
             
-            # Find the closest preceding header tag to accurately name the table (e.g., "General")
-            prev_header = table.find_previous(["h1", "h2", "h3", "h4", "h5", "h6", "div"], class_=lambda c: c and any(x in c.lower() for x in ['header', 'heading', 'title']))
-            if prev_header:
-                text = prev_header.get_text(strip=True)
-                # Ensure it's not grabbing a massive paragraph of text by mistake
-                if len(text) > 0 and len(text) < 40:
-                    section_title = text
+            # Find the closest parent card/panel to get the real header
+            parent_card = table.find_parent(["div", "section"], class_=lambda c: c and any(x in c.lower() for x in ['card', 'panel', 'box', 'wrap']))
+            if parent_card:
+                header = parent_card.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and any(x in c.lower() for x in ['header', 'heading', 'title']))
+                if header: 
+                    cleaned_header = header.get_text(strip=True)
+                    if cleaned_header: section_title = cleaned_header
+            
+            # Fallback if still generic
+            if section_title.startswith("Details Section"):
+                prev_header = table.find_previous(["h1", "h2", "h3", "h4", "h5", "h6", "div"], class_=lambda c: c and any(x in c.lower() for x in ['header', 'heading', 'title']))
+                if prev_header:
+                    text = prev_header.get_text(strip=True)
+                    if 0 < len(text) < 40:
+                        section_title = text
 
             if section_title not in profile["Sections"]:
                 profile["Sections"][section_title] = {}
@@ -176,16 +184,16 @@ def scrape_profile(session, username):
                 key = ""
                 val_elem = None
                 
-                # Smart Parsing: If 3 columns and first is a number (S.No), ignore S.No!
+                # Smart Parsing: If 3+ columns and first is a number (S.No), ignore S.No!
                 if len(cells) >= 3 and cells[0].get_text(strip=True).isdigit():
-                    key = cells[1].get_text(strip=True).replace(":", "").strip()
-                    val_elem = cells[-1] # Button is usually the last column
+                    key = cells[1].get_text(separator=" ", strip=True).replace(":", "").strip()
+                    val_elem = cells[-1] # Button/Action is usually the last column
                 else:
-                    key = cells[0].get_text(strip=True).replace(":", "").strip()
+                    key = cells[0].get_text(separator=" ", strip=True).replace(":", "").strip()
                     val_elem = cells[1]
 
                 if not key or key.lower() == section_title.lower(): continue
-                val_text = val_elem.get_text(strip=True)
+                val_text = val_elem.get_text(separator=" ", strip=True)
                 
                 # Ultimate Link Extractor (Finds <a> tags AND hidden JavaScript window.open buttons)
                 href = None
@@ -210,6 +218,7 @@ def scrape_profile(session, username):
                     if val_text and val_text.lower() not in ["view", "download", "-", ""]:
                         profile["Sections"][section_title][key] = val_text
                         
+                        # Fallback updates for header
                         if "name" in key.lower() and "father" not in key.lower() and "mother" not in key.lower() and "Full Name" not in profile["Header"]:
                             profile["Header"]["Full Name"] = val_text
                         if "branch" in key.lower() and "Department" not in profile["Header"]:
