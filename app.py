@@ -152,54 +152,50 @@ def scrape_profile(session, username):
         branch = header_card.find(["h5", "p"])
         if branch: profile["Header"]["Department"] = branch.get_text(strip=True)
 
-        # 2. Iterate ONLY innermost tables (Completely skips the giant layout tables!)
-        inner_tables = [t for t in soup.find_all("table") if not t.find("table")]
+        processed_trs = set()
 
-        for i, table in enumerate(inner_tables):
-            section_title = f"Details Section {i+1}"
+        # 2. Iterate ALL tables
+        for i, table in enumerate(soup.find_all("table")):
+            section_title = "Other Details"
             
-            # A) Look back to find a section title (h3, h4, div headers)
-            prev = table.find_previous(["h3", "h4", "h5", "h6", "div"])
-            found_header = False
-            for _ in range(5):  
-                if not prev: break
-                class_str = " ".join(prev.get("class", [])).lower()
-                if any(x in class_str for x in ['card-header', 'panel-heading', 'box-header', 'bg-success', 'bg-primary', 'bg-info', 'bg-warning', 'section-title']):
-                    text = prev.get_text(strip=True)
-                    if text and len(text) < 50:
+            # A) Look back to find a section title (h3, h4, div headers inside a panel)
+            parent_panel = table.find_parent(["div", "section"], class_=lambda c: c and any(x in c.lower() for x in ['card', 'panel', 'box', 'wrap']))
+            if parent_panel:
+                header_elem = parent_panel.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and any(x in c.lower() for x in ['heading', 'header', 'title', 'bg-']))
+                if header_elem:
+                    text = header_elem.get_text(strip=True)
+                    if text and len(text) < 60:
                         section_title = text
-                        found_header = True
-                        break
-                prev = prev.find_previous(["h3", "h4", "h5", "h6", "div"])
-
-            # B) Fallback: Check if the very first row of the table acts as the header
-            if not found_header:
-                first_row = table.find("tr")
-                if first_row:
-                    cells = first_row.find_all(["th", "td"], recursive=False)
-                    if len(cells) == 1:
-                        text = cells[0].get_text(strip=True)
-                        if text and len(text) < 50:
-                            section_title = text
-                    elif len(cells) == 2 and not cells[1].get_text(strip=True):
-                        if "bg-" in " ".join(cells[0].get("class", [])).lower():
-                            text = cells[0].get_text(strip=True)
-                            if text and len(text) < 50:
-                                section_title = text
+            
+            # B) Fallback: Check previous sibling
+            if section_title == "Other Details":
+                prev = table.find_previous_sibling(["h1", "h2", "h3", "h4", "h5", "h6", "div"])
+                if prev:
+                    text = prev.get_text(strip=True)
+                    if text and len(text) < 60:
+                        section_title = text
 
             if section_title not in profile["Sections"]:
                 profile["Sections"][section_title] = {}
 
             # 3. Process exactly the data rows
             for tr in table.find_all("tr"):
-                cells = tr.find_all(["th", "td"], recursive=False)
+                if tr in processed_trs: continue
+                
+                cells = tr.find_all(["th", "td"])
                 if not cells or len(cells) < 2: continue
+                
+                # CRITICAL FIX: If this row contains a nested table, it is just a layout wrapper. Skip it!
+                if any(c.find("table") for c in cells):
+                    continue
+                    
+                processed_trs.add(tr)
                 
                 cell_texts = [c.get_text(separator=" ", strip=True) for c in cells]
                 
-                # Skip inline headers and "S.No" tracker rows
-                if len(cells) == 2 and not cell_texts[1]: continue
-                if cell_texts[0].lower().replace(".", "").replace(" ", "") in ["sno", "slno", "serialno", "#"]: continue
+                # Skip S.No tracker rows
+                first_val = cell_texts[0].lower().replace(".", "").replace(" ", "")
+                if first_val in ["sno", "slno", "serialno", "#"]: continue
 
                 if len(cells) >= 3 and cell_texts[0].isdigit():
                     key = cell_texts[1].replace(":", "").strip()
@@ -210,9 +206,9 @@ def scrape_profile(session, username):
 
                 if not key or key.lower() == section_title.lower() or len(key) > 60: continue
 
-                # Extract Value (Extracts from text OR editable <input> boxes)
+                # Extract Value (Extracts from plain text OR editable <input> boxes)
                 val_text = val_elem.get_text(separator=" ", strip=True)
-                input_tags = val_elem.find_all("input", type=lambda t: t != "hidden")
+                input_tags = val_elem.find_all("input", type=lambda t: t and t.lower() != "hidden")
                 if input_tags:
                     input_vals = [inp.get("value", "").strip() for inp in input_tags if inp.get("value")]
                     if input_vals:
@@ -221,7 +217,7 @@ def scrape_profile(session, username):
                 # Extract Links/PDFs (Matches <a> tags OR JavaScript button scripts)
                 href = None
                 a_tag = val_elem.find("a", href=True)
-                if a_tag and "javascript" not in a_tag["href"].lower() and "#" not in a_tag["href"]:
+                if a_tag and a_tag.get("href") and "javascript" not in a_tag["href"].lower() and "#" not in a_tag["href"]:
                     href = a_tag["href"]
                 else:
                     match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", str(val_elem))
