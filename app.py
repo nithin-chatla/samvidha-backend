@@ -152,10 +152,10 @@ def scrape_profile(session, username):
         branch = header_card.find(["h5", "p"])
         if branch: profile["Header"]["Department"] = branch.get_text(strip=True)
 
-        processed_trs = set() # Prevents master-layout tables from duplicating data
+        # 2. Iterate ONLY innermost tables (Ignores giant layout wrapper tables)
+        inner_tables = [t for t in soup.find_all("table") if not t.find("table")]
 
-        # 2. Iterate ALL tables with advanced preceding-header detection
-        for i, table in enumerate(soup.find_all("table")):
+        for i, table in enumerate(inner_tables):
             section_title = "Other Details"
             
             # Find the closest parent card/panel to get the real header
@@ -180,9 +180,6 @@ def scrape_profile(session, username):
 
             # Process rows
             for tr in table.find_all("tr"):
-                if tr in processed_trs: continue
-                processed_trs.add(tr)
-
                 cells = tr.find_all(["th", "td"])
                 if not cells or len(cells) < 2: continue
                 
@@ -207,12 +204,12 @@ def scrape_profile(session, username):
                 if not key or key.lower() == section_title.lower() or len(key) > 60: continue
                 
                 # Extract value (handles standard text AND editable <input> fields like Phone/Email)
-                val_text = ""
-                input_tag = val_elem.find("input", type=lambda t: t != "hidden")
-                if input_tag and input_tag.get("value"):
-                    val_text = input_tag.get("value").strip()
-                else:
-                    val_text = val_elem.get_text(separator=" ", strip=True)
+                val_text = val_elem.get_text(separator=" ", strip=True)
+                input_tags = val_elem.find_all("input", type=lambda t: t != "hidden")
+                for inp in input_tags:
+                    if inp.get("value"):
+                        val_text += " " + inp.get("value").strip()
+                val_text = val_text.strip()
                 
                 # Ultimate Link Extractor (Finds <a> tags AND hidden JavaScript window.open buttons)
                 href = None
