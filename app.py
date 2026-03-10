@@ -152,66 +152,73 @@ def scrape_profile(session, username):
         branch = header_card.find(["h5", "p"])
         if branch: profile["Header"]["Department"] = branch.get_text(strip=True)
 
-        # 2. Iterate ONLY innermost tables (Ignores giant layout wrapper tables)
+        # 2. Iterate ONLY innermost tables (Completely skips the giant layout tables!)
         inner_tables = [t for t in soup.find_all("table") if not t.find("table")]
 
         for i, table in enumerate(inner_tables):
-            section_title = "Other Details"
+            section_title = f"Details Section {i+1}"
             
-            # Find the closest parent card/panel to get the real header
-            parent_card = table.find_parent(["div", "section"], class_=lambda c: c and any(x in c.lower() for x in ['card', 'panel', 'box', 'wrap']))
-            if parent_card:
-                header = parent_card.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and any(x in c.lower() for x in ['header', 'heading', 'title']))
-                if header: 
-                    cleaned_header = header.get_text(strip=True)
-                    if cleaned_header and len(cleaned_header) < 50: 
-                        section_title = cleaned_header
-            
-            # Fallback if still generic
-            if section_title == "Other Details":
-                prev_header = table.find_previous_sibling(["h1", "h2", "h3", "h4", "h5", "h6", "div"])
-                if prev_header:
-                    text = prev_header.get_text(strip=True)
-                    if 0 < len(text) < 50:
+            # A) Look back to find a section title (h3, h4, div headers)
+            prev = table.find_previous(["h3", "h4", "h5", "h6", "div"])
+            found_header = False
+            for _ in range(5):  
+                if not prev: break
+                class_str = " ".join(prev.get("class", [])).lower()
+                if any(x in class_str for x in ['card-header', 'panel-heading', 'box-header', 'bg-success', 'bg-primary', 'bg-info', 'bg-warning', 'section-title']):
+                    text = prev.get_text(strip=True)
+                    if text and len(text) < 50:
                         section_title = text
+                        found_header = True
+                        break
+                prev = prev.find_previous(["h3", "h4", "h5", "h6", "div"])
+
+            # B) Fallback: Check if the very first row of the table acts as the header
+            if not found_header:
+                first_row = table.find("tr")
+                if first_row:
+                    cells = first_row.find_all(["th", "td"], recursive=False)
+                    if len(cells) == 1:
+                        text = cells[0].get_text(strip=True)
+                        if text and len(text) < 50:
+                            section_title = text
+                    elif len(cells) == 2 and not cells[1].get_text(strip=True):
+                        if "bg-" in " ".join(cells[0].get("class", [])).lower():
+                            text = cells[0].get_text(strip=True)
+                            if text and len(text) < 50:
+                                section_title = text
 
             if section_title not in profile["Sections"]:
                 profile["Sections"][section_title] = {}
 
-            # Process rows
+            # 3. Process exactly the data rows
             for tr in table.find_all("tr"):
-                cells = tr.find_all(["th", "td"])
+                cells = tr.find_all(["th", "td"], recursive=False)
                 if not cells or len(cells) < 2: continue
                 
                 cell_texts = [c.get_text(separator=" ", strip=True) for c in cells]
-                first_cell_lower = cell_texts[0].lower().replace(".", "").replace(" ", "")
+                
+                # Skip inline headers and "S.No" tracker rows
+                if len(cells) == 2 and not cell_texts[1]: continue
+                if cell_texts[0].lower().replace(".", "").replace(" ", "") in ["sno", "slno", "serialno", "#"]: continue
 
-                # Skip header rows (fixes the "S.no Certificate" bug)
-                if first_cell_lower in ["sno", "slno", "serialno", "#"]: 
-                    continue
-                
-                key = ""
-                val_elem = None
-                
-                # Smart Parsing: If 3+ columns and first is a number (S.No)
                 if len(cells) >= 3 and cell_texts[0].isdigit():
                     key = cell_texts[1].replace(":", "").strip()
-                    val_elem = cells[-1] # Button/Action is usually the last column
+                    val_elem = cells[-1] 
                 else:
                     key = cell_texts[0].replace(":", "").strip()
                     val_elem = cells[1]
 
                 if not key or key.lower() == section_title.lower() or len(key) > 60: continue
-                
-                # Extract value (handles standard text AND editable <input> fields like Phone/Email)
+
+                # Extract Value (Extracts from text OR editable <input> boxes)
                 val_text = val_elem.get_text(separator=" ", strip=True)
                 input_tags = val_elem.find_all("input", type=lambda t: t != "hidden")
-                for inp in input_tags:
-                    if inp.get("value"):
-                        val_text += " " + inp.get("value").strip()
-                val_text = val_text.strip()
-                
-                # Ultimate Link Extractor (Finds <a> tags AND hidden JavaScript window.open buttons)
+                if input_tags:
+                    input_vals = [inp.get("value", "").strip() for inp in input_tags if inp.get("value")]
+                    if input_vals:
+                        val_text = " ".join(input_vals)
+
+                # Extract Links/PDFs (Matches <a> tags OR JavaScript button scripts)
                 href = None
                 a_tag = val_elem.find("a", href=True)
                 if a_tag and "javascript" not in a_tag["href"].lower() and "#" not in a_tag["href"]:
@@ -219,7 +226,7 @@ def scrape_profile(session, username):
                 else:
                     match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", str(val_elem))
                     if match: href = match.group(1)
-                    
+
                 if href:
                     if href.startswith("/"): href = BASE + href
                     elif not href.startswith("http"): href = BASE + "/" + href
@@ -230,17 +237,19 @@ def scrape_profile(session, username):
                         
                     profile["Documents"][doc_name] = href
                 else:
-                    # Normal Text Data
                     if val_text and val_text.lower() not in ["view", "download", "-", ""]:
                         profile["Sections"][section_title][key] = val_text
                         
-                        # Fallback updates for header
-                        if "name" in key.lower() and "father" not in key.lower() and "mother" not in key.lower() and "Full Name" not in profile["Header"]:
+                        # Sync important details directly to the Header
+                        kl = key.lower()
+                        if "roll" in kl and "number" in kl:
+                            profile["Header"]["Roll Number"] = val_text
+                        if "name" in kl and "father" not in kl and "mother" not in kl and "Full Name" not in profile["Header"]:
                             profile["Header"]["Full Name"] = val_text
-                        if "branch" in key.lower() and "Department" not in profile["Header"]:
+                        if "branch" in kl and "Department" not in profile["Header"]:
                             profile["Header"]["Department"] = val_text
 
-        # Clean up any empty sections
+        # 4. Clean up any empty sections
         empty_keys = [k for k, v in profile["Sections"].items() if not v]
         for k in empty_keys: del profile["Sections"][k]
 
@@ -271,7 +280,7 @@ def api_login():
 def api_all():
     token = require_token()
     session = SESSIONS[token]
-    username = TOKENS[token]["username"]  # Pass username for Guaranteed Roll Number
+    username = TOKENS[token]["username"]  
     return jsonify({
         "ok": True,
         "attendance": scrape_attendance(session),
