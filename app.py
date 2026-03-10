@@ -5,6 +5,7 @@ from flask_cors import CORS
 from bs4 import BeautifulSoup
 import secrets
 import time
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -141,58 +142,87 @@ def scrape_profile(session):
         r = session.get(BASE + "/home?action=profile", timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
 
-        profile = {
-            "Header": {},
-            "Sections": {},
-            "Documents": {}
-        }
+        profile = {"Header": {}, "Sections": {}, "Documents": {}}
         
         # 1. Grab Name/Branch Headers robustly
-        header_card = soup.find("div", class_=["card-body", "panel-body", "profile-user-info"])
-        if header_card:
-            name = header_card.find(["h3", "h4", "h5", "strong"])
-            if name: profile["Header"]["Full Name"] = name.get_text(strip=True)
-            branch = header_card.find(["h5", "p"])
-            if branch: profile["Header"]["Department"] = branch.get_text(strip=True)
+        header_card = soup.find("div", class_=lambda c: c and any(x in c.lower() for x in ['profile', 'user-info', 'card-body', 'panel-body']))
+        if not header_card: header_card = soup
+        name = header_card.find(["h3", "h4", "h5", "strong"])
+        if name: profile["Header"]["Full Name"] = name.get_text(strip=True)
+        branch = header_card.find(["h5", "p"])
+        if branch: profile["Header"]["Department"] = branch.get_text(strip=True)
 
-        # 2. Iterate ALL tables to prevent missing data in different layouts
-        for table in soup.find_all("table"):
-            # Try to identify the table's section name
-            section_title = "General Details"
-            prev_header = table.find_previous(["div", "h3", "h4", "h5", "h6"], class_=["card-header", "panel-heading", "box-header", "bg-primary"])
-            if prev_header and prev_header.get_text(strip=True):
-                section_title = prev_header.get_text(strip=True)
+        # 2. Iterate ALL tables intelligently
+        for i, table in enumerate(soup.find_all("table")):
+            section_title = f"Details Section {i+1}"
+            
+            # Check if first row is a title header (spans columns)
+            first_row = table.find("tr")
+            if first_row:
+                cells = first_row.find_all(["th", "td"])
+                if len(cells) == 1 and cells[0].get("colspan"):
+                    section_title = cells[0].get_text(strip=True)
+            
+            # Check parent container for a header text (e.g. "General")
+            if section_title.startswith("Details Section"):
+                parent = table.find_parent("div", class_=lambda c: c and any(x in c.lower() for x in ['panel', 'card', 'box']))
+                if parent:
+                    header = parent.find(["div", "h3", "h4", "h5"], class_=lambda c: c and any(x in c.lower() for x in ['heading', 'header', 'title']))
+                    if header: section_title = header.get_text(strip=True)
 
             if section_title not in profile["Sections"]:
                 profile["Sections"][section_title] = {}
 
-            # Process every row in the table
+            # Process rows
             for tr in table.find_all("tr"):
                 cells = tr.find_all(["th", "td"])
-                if len(cells) >= 2:
+                if not cells or len(cells) < 2: continue
+                
+                key = ""
+                val_elem = None
+                
+                # Smart Parsing: If 3 columns and first is a number (S.No), ignore S.No!
+                if len(cells) >= 3 and cells[0].get_text(strip=True).isdigit():
+                    key = cells[1].get_text(strip=True).replace(":", "").strip()
+                    val_elem = cells[-1] # Usually the button is the last column
+                else:
                     key = cells[0].get_text(strip=True).replace(":", "").strip()
                     val_elem = cells[1]
+
+                if not key or key.lower() == section_title.lower(): continue
+                val_text = val_elem.get_text(strip=True)
+                
+                # Ultimate Link Extractor (Finds <a> tags AND hidden JavaScript window.open buttons)
+                href = None
+                a_tag = val_elem.find("a", href=True)
+                if a_tag and "javascript" not in a_tag["href"].lower():
+                    href = a_tag["href"]
+                else:
+                    match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", str(val_elem))
+                    if match: href = match.group(1)
                     
-                    # Look for downloadable Document Links
-                    link = val_elem.find("a", href=True)
-                    if link:
-                        href = link["href"]
-                        if href.startswith("/"): href = BASE + href
-                        elif not href.startswith("http"): href = BASE + "/" + href
-                        profile["Documents"][key] = href
-                    else:
-                        val = val_elem.get_text(strip=True)
-                        if key and val:
-                            profile["Sections"][section_title][key] = val
-                            
-                            # Fallback: Capture Roll Number wherever it appears to ensure the photo loads
-                            if "roll number" in key.lower() or "rollno" in key.lower():
-                                profile["Header"]["Roll Number"] = val
-                            # Fallback: Capture name/branch if it wasn't at the top of the page
-                            if "name" in key.lower() and "father" not in key.lower() and "mother" not in key.lower() and "Full Name" not in profile["Header"]:
-                                profile["Header"]["Full Name"] = val
-                            if "branch" in key.lower() and "Department" not in profile["Header"]:
-                                profile["Header"]["Department"] = val
+                if href:
+                    if href.startswith("/"): href = BASE + href
+                    elif not href.startswith("http"): href = BASE + "/" + href
+                    
+                    doc_name = key
+                    # If the column has meaningful text like "EAMCET RANK", use that as the document name
+                    if val_text and val_text.lower() not in ["view", "download", "click here", "-", ""]:
+                        doc_name = val_text
+                        
+                    profile["Documents"][doc_name] = href
+                else:
+                    # Normal Text Data (Phone, Email, Aadhar)
+                    if val_text and val_text.lower() not in ["view", "download", "-", ""]:
+                        profile["Sections"][section_title][key] = val_text
+                        
+                        # Aggressive Roll Number Hunter (for your Profile Photo!)
+                        if "roll number" in key.lower() or "rollno" in key.lower() or "htno" in key.lower():
+                            profile["Header"]["Roll Number"] = val_text
+
+        # Clean up any empty sections before sending to Flutter
+        empty_keys = [k for k, v in profile["Sections"].items() if not v]
+        for k in empty_keys: del profile["Sections"][k]
 
         return profile
     except Exception as e:
