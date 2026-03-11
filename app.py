@@ -271,11 +271,10 @@ def api_lab_subject_data():
             soup = BeautifulSoup(exp_res.text, 'html.parser')
             for tr in soup.find_all('tr')[1:]:
                 cols = tr.find_all('td')
-                # Changed from >= 3 to >= 6 to ensure we have all the columns
                 if len(cols) >= 6:
                     week = cols[0].get_text(strip=True)
-                    title = cols[3].get_text(strip=True) # Index 3 is Experiment Title
-                    date = cols[5].get_text(strip=True)  # Index 5 is Submission Date
+                    title = cols[3].get_text(strip=True) 
+                    date = cols[5].get_text(strip=True)  
                     schedule_list.append({"week": week, "title": title, "date": date})
 
         # Fetch Submitted JSON and parse action buttons
@@ -284,13 +283,24 @@ def api_lab_subject_data():
             sub_json = sub_res.json()
             for rec in sub_json.get('data', []):
                 week_no = rec.get('week_no')
-                mark = rec.get('mark', '')
-                status = "Evaluated" if mark and mark not in ['-', ''] else "Submitted"
                 
-                # Check the action string for Delete or Reupload buttons
-                action_html = str(rec.get('action', '')).lower()
-                can_delete = "day2day_lab_delete" in action_html or "btn-danger" in action_html or "delete" in action_html
-                can_reupload = "reupload" in action_html or "re-upload" in action_html or "btn-warning" in action_html
+                # Check Evaluation Status
+                mark = str(rec.get('mark', '')).strip()
+                is_evaluated = bool(mark and mark != '-')
+                status = "Evaluated" if is_evaluated else "Submitted"
+                
+                # Check for explicit delete flag from JSON (used by the telegram bot), or fallback to evaluation status
+                json_delete_flag = rec.get('delete') in [1, '1', True]
+                can_delete = json_delete_flag or not is_evaluated
+                
+                # If evaluated, absolutely prevent deletion
+                if is_evaluated:
+                    can_delete = False
+                
+                # Check Remarks for Reupload
+                remarks = str(rec.get('remarks', '')).lower()
+                action_str = str(rec.get('action', '')).lower()
+                can_reupload = 'reupload' in remarks or 're-upload' in remarks or 'reupload' in action_str
                 
                 roll = ud.get('rollno', '').upper()
                 sem = ud.get('current_sem', '').upper()
