@@ -271,10 +271,12 @@ def api_lab_subject_data():
             soup = BeautifulSoup(exp_res.text, 'html.parser')
             for tr in soup.find_all('tr')[1:]:
                 cols = tr.find_all('td')
-                if len(cols) >= 3:
+                # Changed from >= 3 to >= 6 to ensure we have all the columns
+                if len(cols) >= 6:
                     week = cols[0].get_text(strip=True)
-                    title = cols[2].get_text(strip=True)
-                    schedule_list.append({"week": week, "title": title})
+                    title = cols[3].get_text(strip=True) # Index 3 is Experiment Title
+                    date = cols[5].get_text(strip=True)  # Index 5 is Submission Date
+                    schedule_list.append({"week": week, "title": title, "date": date})
 
         # Fetch Submitted JSON and parse action buttons
         sub_res = session.post(ajax_url, headers=headers, data={'rollno': ud.get('rollno'), 'ay': ud.get('ay'), 'sub_code': sub_code, 'action': 'day2day_lab'}, timeout=15)
