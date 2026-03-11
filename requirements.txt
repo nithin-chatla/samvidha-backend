@@ -4,3 +4,5 @@ beautifulsoup4==4.12.2
 flask-cors==4.0.0
 gunicorn==21.2.0
 PyMuPDF
+Flask-Cors
+Pillow
