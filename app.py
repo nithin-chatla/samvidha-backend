@@ -265,7 +265,6 @@ def api_lab_subject_data():
     submitted_list = []
     
     try:
-        # Fetch Schedule HTML
         exp_res = session.post(ajax_url, headers=headers, data={'ay': ud.get('ay'), 'sub_code': sub_code, 'action': 'get_exp_list'}, timeout=15)
         if exp_res.status_code == 200:
             soup = BeautifulSoup(exp_res.text, 'html.parser')
@@ -277,30 +276,29 @@ def api_lab_subject_data():
                     date = cols[5].get_text(strip=True)  
                     schedule_list.append({"week": week, "title": title, "date": date})
 
-        # Fetch Submitted JSON and parse action buttons
         sub_res = session.post(ajax_url, headers=headers, data={'rollno': ud.get('rollno'), 'ay': ud.get('ay'), 'sub_code': sub_code, 'action': 'day2day_lab'}, timeout=15)
         if sub_res.status_code == 200:
             sub_json = sub_res.json()
             for rec in sub_json.get('data', []):
                 week_no = rec.get('week_no')
                 
-                # STRICT EVALUATION CHECK: Must contain actual numbers in the marks field
+                # EXTRACT RAW VALUES
                 mark = str(rec.get('mark', '')).strip()
-                is_evaluated = bool(re.search(r'\d', mark))
-                status = "Evaluated" if is_evaluated else "Submitted"
-                
                 action_str = str(rec.get('action', '')).lower()
+                remarks = str(rec.get('remarks', '')).lower()
                 
-                # Check for explicit delete flag from JSON or if 'delete' is in the action HTML
+                # SMART LOGIC: Always trust Samvidha's explicit Delete/Reupload flags
                 json_delete_flag = str(rec.get('delete', '0')) == '1'
-                can_delete = json_delete_flag or 'delete' in action_str
+                can_delete = json_delete_flag or 'delete' in action_str or 'btn-danger' in action_str
+                can_reupload = 'reupload' in action_str or 're-upload' in action_str or 'update' in action_str or 'reupload' in remarks
                 
-                # If definitely evaluated, Samvidha generally prevents deletion
-                if is_evaluated:
-                    can_delete = False
-                
-                # Check Remarks and Action String for Reupload
-                can_reupload = 'reupload' in action_str or 're-upload' in action_str or 'update' in action_str
+                # STATUS LOGIC
+                if can_delete or can_reupload:
+                    status = "Submitted"  # It is definitely NOT evaluated yet if we can delete/reupload it
+                    if mark == "0": 
+                        mark = "-"  # Hide default '0' so it doesn't look like a real grade
+                else:
+                    status = "Evaluated" if mark and mark not in ["-", ""] else "Submitted"
                 
                 roll = ud.get('rollno', '').upper()
                 sem = ud.get('current_sem', '').upper()
@@ -310,14 +308,13 @@ def api_lab_subject_data():
                     "week_no": str(week_no),
                     "week": f"Week-{week_no}",
                     "title": rec.get('exp_title', f"Experiment {week_no}"),
-                    "marks": mark if is_evaluated else "-",
+                    "marks": mark if mark else "-",
                     "status": status,
                     "url": url,
                     "can_delete": can_delete,
                     "can_reupload": can_reupload
                 })
                 
-        # Link Titles
         for sub in submitted_list:
             for sch in schedule_list:
                 if sch['week'].replace(" ", "") == sub['week'].replace(" ", ""):
