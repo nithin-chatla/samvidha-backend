@@ -183,7 +183,6 @@ def scrape_profile(session, username):
     except Exception:
         return {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
 
-# --- Extreme Auto-Compression (From Bot) ---
 def rasterize_and_compress_pdf(file_bytes):
     if not fitz or not Image:
         raise Exception("PyMuPDF/Pillow missing.")
@@ -199,9 +198,6 @@ def rasterize_and_compress_pdf(file_bytes):
     images[0].save(output_io, format="PDF", resolution=100.0, save_all=True, append_images=images[1:], quality=50, optimize=True)
     return output_io.getvalue()
 
-# -------------------------------------------------------------------
-# API ROUTES
-# -------------------------------------------------------------------
 @app.route("/login", methods=["POST"])
 def api_login():
     data = request.get_json() or {}
@@ -226,8 +222,6 @@ def api_all():
         "profile": scrape_profile(session, username)
     })
 
-# --- NEW LAB ROUTES BASED ON BOT AJAX LOGIC ---
-
 @app.route("/lab_init", methods=["GET"])
 def api_lab_init():
     token = require_token()
@@ -242,15 +236,12 @@ def api_lab_init():
             user_details[key] = inp['value'].strip() if inp else ""
             
         subjects = []
-        # Target the exact ID found in the bot's scrape_lab_form logic
         select = soup.find('select', id='ddlsub_code')
         if select:
             for opt in select.find_all('option'):
                 val = opt.get('value', '').strip()
                 text = opt.get_text(strip=True)
-                # Usually options are formatted as "CODE - Name", let's split it if possible
                 if val and "Select Lab" not in text:
-                    # Clean up the label if it contains a dash
                     if " - " in text:
                          text = text.split(" - ", 1)[1]
                     subjects.append({"value": val, "label": text})
@@ -285,7 +276,7 @@ def api_lab_subject_data():
                     title = cols[2].get_text(strip=True)
                     schedule_list.append({"week": week, "title": title})
 
-        # Fetch Submitted JSON
+        # Fetch Submitted JSON and parse action buttons
         sub_res = session.post(ajax_url, headers=headers, data={'rollno': ud.get('rollno'), 'ay': ud.get('ay'), 'sub_code': sub_code, 'action': 'day2day_lab'}, timeout=15)
         if sub_res.status_code == 200:
             sub_json = sub_res.json()
@@ -293,6 +284,11 @@ def api_lab_subject_data():
                 week_no = rec.get('week_no')
                 mark = rec.get('mark', '')
                 status = "Evaluated" if mark and mark not in ['-', ''] else "Submitted"
+                
+                # Check the action string for Delete or Reupload buttons
+                action_html = str(rec.get('action', '')).lower()
+                can_delete = "day2day_lab_delete" in action_html or "btn-danger" in action_html or "delete" in action_html
+                can_reupload = "reupload" in action_html or "re-upload" in action_html or "btn-warning" in action_html
                 
                 roll = ud.get('rollno', '').upper()
                 sem = ud.get('current_sem', '').upper()
@@ -305,6 +301,8 @@ def api_lab_subject_data():
                     "marks": mark,
                     "status": status,
                     "url": url,
+                    "can_delete": can_delete,
+                    "can_reupload": can_reupload
                 })
                 
         # Link Titles
@@ -323,8 +321,6 @@ def api_lab_upload():
     session = SESSIONS[token]
     
     ajax_url = BASE + "/pages/student/lab_records/ajax/day2day"
-    
-    # We must send fields as MULTIPART using the exact structure the bot discovered
     upload_payload = {'action': (None, 'upload_lab_record_student')}
     for k, v in request.form.items():
         upload_payload[k] = (None, v)
@@ -348,13 +344,11 @@ def api_lab_upload():
         if file_size > 1024 * 1024:
             return jsonify({"ok": False, "error": "PDF too large. Auto-compression failed. Please compress manually."}), 400
 
-    stream = io.BytesIO(file_bytes)
-    
-    # Use exact naming convention required by portal
     rollno = request.form.get('rollno', '').upper()
     week_no = request.form.get('week_no', '')
     filename = f"{rollno}_week{week_no}.pdf" if rollno and week_no else f.filename
     
+    stream = io.BytesIO(file_bytes)
     upload_payload['prog_doc'] = (filename, stream, 'application/pdf')
 
     try:
