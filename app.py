@@ -113,6 +113,34 @@ def scrape_midmarks(session):
     except Exception:
         return {"theory": [], "laboratory": []}
 
+def scrape_cgpa(session):
+    try:
+        # Common endpoints where CGPA might be hiding
+        endpoints = ["/home?action=result_ug", "/home?action=profile", "/home?action=res_std"]
+        for ep in endpoints:
+            r = session.get(BASE + ep, timeout=10)
+            if r.status_code == 200 and "CGPA" in r.text.upper():
+                soup = BeautifulSoup(r.text, "html.parser")
+                
+                # Hunt for the word "CGPA"
+                text_nodes = soup.find_all(string=re.compile(r'CGPA', re.IGNORECASE))
+                for node in text_nodes:
+                    parent_text = node.parent.get_text(separator=" ", strip=True)
+                    
+                    # Pattern 1: CGPA : 8.75
+                    match = re.search(r'CGPA\s*[:=-]?\s*([0-9]{1,2}\.[0-9]{1,2})', parent_text, re.IGNORECASE)
+                    if match:
+                        return match.group(1)
+                        
+                    # Pattern 2: Inside the next table cell <td>8.75</td>
+                    next_elem = node.parent.find_next_sibling(['td', 'th', 'span', 'div'])
+                    if next_elem:
+                        match = re.search(r'([0-9]{1,2}\.[0-9]{1,2})', next_elem.get_text(strip=True))
+                        if match: return match.group(1)
+        return "N/A"
+    except Exception:
+        return "N/A"
+
 def scrape_profile(session, username):
     try:
         r = session.get(BASE + "/home?action=profile", timeout=15)
@@ -219,7 +247,8 @@ def api_all():
         "ok": True,
         "attendance": scrape_attendance(session),
         "midmarks": scrape_midmarks(session),
-        "profile": scrape_profile(session, username)
+        "profile": scrape_profile(session, username),
+        "cgpa": scrape_cgpa(session)
     })
 
 @app.route("/lab_init", methods=["GET"])
