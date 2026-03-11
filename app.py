@@ -144,7 +144,7 @@ def scrape_profile(session, username):
 
         profile = {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
         
-        # 1. Grab Name/Branch Headers robustly
+        # Grab Name/Branch Headers
         header_card = soup.find("div", class_=lambda c: c and any(x in c.lower() for x in ['profile', 'user-info', 'card-body', 'panel-body']))
         if not header_card: header_card = soup
         name = header_card.find(["h3", "h4", "h5", "strong"])
@@ -154,53 +154,43 @@ def scrape_profile(session, username):
 
         processed_trs = set()
 
-        # 2. Iterate ONLY innermost tables
+        # Iterate ONLY innermost tables to avoid layout tables breaking the parser
         inner_tables = [t for t in soup.find_all("table") if not t.find("table")]
 
         for i, table in enumerate(inner_tables):
             section_title = "Other Details"
             
-            # A) Look back to find a section title
-            prev = table.find_previous(["h3", "h4", "h5", "h6", "div"])
-            found_header = False
-            for _ in range(5):  
-                if not prev: break
-                class_str = " ".join(prev.get("class", [])).lower()
-                if any(x in class_str for x in ['card-header', 'panel-heading', 'box-header', 'bg-success', 'bg-primary', 'bg-info', 'bg-warning', 'section-title']):
-                    text = prev.get_text(strip=True)
-                    if text and len(text) < 50:
+            # Find accurate section header
+            parent_card = table.find_parent(["div", "section"], class_=lambda c: c and any(x in c.lower() for x in ['card', 'panel', 'box', 'wrap']))
+            if parent_card:
+                header = parent_card.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and any(x in c.lower() for x in ['header', 'heading', 'title']))
+                if header: 
+                    cleaned_header = header.get_text(strip=True)
+                    if cleaned_header and len(cleaned_header) < 50: 
+                        section_title = cleaned_header
+            
+            if section_title == "Other Details":
+                prev_header = table.find_previous_sibling(["h1", "h2", "h3", "h4", "h5", "h6", "div"])
+                if prev_header:
+                    text = prev_header.get_text(strip=True)
+                    if 0 < len(text) < 50:
                         section_title = text
-                        found_header = True
-                        break
-                prev = prev.find_previous(["h3", "h4", "h5", "h6", "div"])
-
-            if not found_header:
-                first_row = table.find("tr")
-                if first_row:
-                    cells = first_row.find_all(["th", "td"], recursive=False)
-                    if len(cells) == 1:
-                        text = cells[0].get_text(strip=True)
-                        if text and len(text) < 50:
-                            section_title = text
-                    elif len(cells) == 2 and not cells[1].get_text(strip=True):
-                        if "bg-" in " ".join(cells[0].get("class", [])).lower():
-                            text = cells[0].get_text(strip=True)
-                            if text and len(text) < 50:
-                                section_title = text
 
             if section_title not in profile["Sections"]:
                 profile["Sections"][section_title] = {}
 
-            # 3. Process exactly the data rows
             for tr in table.find_all("tr"):
-                cells = tr.find_all(["th", "td"], recursive=False)
-                if not cells or len(cells) < 2: continue
+                if tr in processed_trs: continue
                 
+                cells = tr.find_all(["th", "td"])
+                if not cells or len(cells) < 2: continue
+                if any(c.find("table") for c in cells): continue
+                    
+                processed_trs.add(tr)
                 cell_texts = [c.get_text(separator=" ", strip=True) for c in cells]
                 
-                # Skip inline headers and S.No tracker rows
-                if len(cells) == 2 and not cell_texts[1]: continue
-                if cell_texts[0].lower().replace(".", "").replace(" ", "") in ["sno", "slno", "serialno", "#"]: continue
+                first_val = cell_texts[0].lower().replace(".", "").replace(" ", "")
+                if first_val in ["sno", "slno", "serialno", "#"]: continue
 
                 if len(cells) >= 3 and cell_texts[0].isdigit():
                     key = cell_texts[1].replace(":", "").strip()
@@ -211,18 +201,17 @@ def scrape_profile(session, username):
 
                 if not key or key.lower() == section_title.lower() or len(key) > 60: continue
 
-                # Extract Value
+                # Extract Value & Inputs
                 val_text = val_elem.get_text(separator=" ", strip=True)
-                input_tags = val_elem.find_all("input", type=lambda t: t != "hidden")
+                input_tags = val_elem.find_all("input", type=lambda t: t and t.lower() != "hidden")
                 if input_tags:
                     input_vals = [inp.get("value", "").strip() for inp in input_tags if inp.get("value")]
-                    if input_vals:
-                        val_text = " ".join(input_vals)
+                    if input_vals: val_text = " ".join(input_vals)
 
                 # Extract Links/PDFs
                 href = None
                 a_tag = val_elem.find("a", href=True)
-                if a_tag and "javascript" not in a_tag["href"].lower() and "#" not in a_tag["href"]:
+                if a_tag and a_tag.get("href") and "javascript" not in a_tag["href"].lower() and "#" not in a_tag["href"]:
                     href = a_tag["href"]
                 else:
                     match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", str(val_elem))
@@ -231,19 +220,16 @@ def scrape_profile(session, username):
                 if href:
                     if href.startswith("/"): href = BASE + href
                     elif not href.startswith("http"): href = BASE + "/" + href
-                    
                     doc_name = key
                     if val_text and val_text.lower() not in ["view", "download", "click here", "-", ""]:
                         doc_name = val_text
-                        
                     profile["Documents"][doc_name] = href
                 else:
                     if val_text and val_text.lower() not in ["view", "download", "-", ""]:
                         profile["Sections"][section_title][key] = val_text
                         
                         kl = key.lower()
-                        if "roll" in kl and "number" in kl:
-                            profile["Header"]["Roll Number"] = val_text
+                        if "roll" in kl and "number" in kl: profile["Header"]["Roll Number"] = val_text
                         if "name" in kl and "father" not in kl and "mother" not in kl and "Full Name" not in profile["Header"]:
                             profile["Header"]["Full Name"] = val_text
                         if "branch" in kl and "Department" not in profile["Header"]:
@@ -251,7 +237,6 @@ def scrape_profile(session, username):
 
         empty_keys = [k for k, v in profile["Sections"].items() if not v]
         for k in empty_keys: del profile["Sections"][k]
-
         return profile
     except Exception as e:
         print(f"Scrape Profile Error: {e}")
@@ -266,10 +251,12 @@ def scrape_lab_form(session):
             "action_url": "",
             "inputs": {},
             "dropdowns": {},
-            "file_inputs": []
+            "file_inputs": [],
+            "schedule": [],
+            "submitted": []
         }
 
-        # Find the upload form (looks for multipart forms or anything involving 'upload')
+        # 1. Extract the Upload Form
         upload_form = soup.find("form", enctype="multipart/form-data")
         if not upload_form:
             for f in soup.find_all("form"):
@@ -279,18 +266,13 @@ def scrape_lab_form(session):
 
         if upload_form:
             form_data["action_url"] = upload_form.get("action", "")
-            
-            # Scrape standard inputs (Hidden fields, preset values like RollNo)
             for inp in upload_form.find_all("input"):
                 name = inp.get("name")
                 inp_type = inp.get("type", "text").lower()
                 if name:
-                    if inp_type == "file":
-                        form_data["file_inputs"].append(name)
-                    else:
-                        form_data["inputs"][name] = inp.get("value", "")
+                    if inp_type == "file": form_data["file_inputs"].append(name)
+                    else: form_data["inputs"][name] = inp.get("value", "")
 
-            # Scrape Dropdowns (Lab Names, Weeks)
             for sel in upload_form.find_all("select"):
                 name = sel.get("name")
                 if name:
@@ -298,9 +280,57 @@ def scrape_lab_form(session):
                     for opt in sel.find_all("option"):
                         val = opt.get("value", "")
                         text = opt.get_text(strip=True)
-                        if val: 
-                            options.append({"value": val, "label": text})
+                        if val: options.append({"value": val, "label": text})
                     form_data["dropdowns"][name] = options
+
+        # 2. Extract Experiment Schedule and Submitted Lists
+        for table in soup.find_all("table"):
+            headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
+            header_text = " ".join(headers)
+            
+            # Scrape Experiment Details (Schedule)
+            if "experiment title" in header_text and "submission date" in header_text:
+                for tr in table.find_all("tr"):
+                    cols = tr.find_all("td")
+                    if len(cols) >= 6:
+                        form_data["schedule"].append({
+                            "week": cols[0].get_text(strip=True),
+                            "title": cols[3].get_text(strip=True),
+                            "date": cols[5].get_text(strip=True)
+                        })
+                        
+            # Scrape Submitted Lab Record List
+            if "marks" in header_text and "remarks" in header_text:
+                for tr in table.find_all("tr"):
+                    cols = tr.find_all("td")
+                    if len(cols) >= 8:
+                        if "no data available" in cols[0].get_text(strip=True).lower():
+                            continue
+                        
+                        marks = cols[6].get_text(strip=True)
+                        status = "Evaluated" if marks and marks not in ["-", ""] else "Submitted"
+                        
+                        # Find the View/Update link
+                        url = ""
+                        a_tag = cols[-1].find("a", href=True)
+                        if a_tag:
+                            url = a_tag["href"]
+                            if url.startswith("/"): url = BASE + url
+                            elif not url.startswith("http"): url = BASE + "/" + url
+                        elif "window.open" in str(cols[-1]):
+                            match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", str(cols[-1]))
+                            if match: 
+                                url = match.group(1)
+                                if url.startswith("/"): url = BASE + url
+                                elif not url.startswith("http"): url = BASE + "/" + url
+                            
+                        form_data["submitted"].append({
+                            "week": cols[3].get_text(strip=True),
+                            "title": cols[5].get_text(strip=True),
+                            "marks": marks,
+                            "status": status,
+                            "url": url
+                        })
         
         return form_data
     except Exception as e:
@@ -356,16 +386,13 @@ def api_upload_lab():
     if not action_url.startswith("http"):
         action_url = BASE + action_url if action_url.startswith("/") else BASE + "/" + action_url
 
-    # Extract all text fields provided by the App
     payload = {k: v for k, v in request.form.items() if k != "action_url"}
 
-    # Extract and validate file size (<1MB)
     if not request.files:
         return jsonify({"ok": False, "error": "No file uploaded"}), 400
         
     upload_files = {}
     for field_name, f in request.files.items():
-        # Check strict 1MB limit (1024 * 1024 bytes)
         f.seek(0, os.SEEK_END)
         size = f.tell()
         f.seek(0)
@@ -375,9 +402,7 @@ def api_upload_lab():
         upload_files[field_name] = (f.filename, f.stream, f.mimetype)
 
     try:
-        # Submit to Samvidha Portal
         res = session.post(action_url, data=payload, files=upload_files, timeout=30)
-        
         if res.status_code == 200:
             return jsonify({"ok": True, "message": "Lab record submitted to Samvidha successfully!"})
         else:
