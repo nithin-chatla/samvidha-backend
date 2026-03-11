@@ -236,15 +236,18 @@ def api_lab_init():
             user_details[key] = inp['value'].strip() if inp else ""
             
         subjects = []
+        seen_subjects = set()  # SUPER IMPORTANT: DEDUPLICATION
         select = soup.find('select', id='ddlsub_code')
         if select:
             for opt in select.find_all('option'):
                 val = opt.get('value', '').strip()
                 text = opt.get_text(strip=True)
                 if val and "Select Lab" not in text:
-                    if " - " in text:
-                         text = text.split(" - ", 1)[1]
-                    subjects.append({"value": val, "label": text})
+                    if val not in seen_subjects:  # DEDUPLICATION CHECK
+                        seen_subjects.add(val)
+                        if " - " in text:
+                             text = text.split(" - ", 1)[1]
+                        subjects.append({"value": val, "label": text})
                     
         return jsonify({"ok": True, "user_details": user_details, "subjects": subjects})
     except Exception as e:
@@ -282,21 +285,21 @@ def api_lab_subject_data():
             for rec in sub_json.get('data', []):
                 week_no = rec.get('week_no')
                 
-                # EXTRACT RAW VALUES
                 mark = str(rec.get('mark', '')).strip()
+                is_evaluated = bool(re.search(r'\d', mark))
+                status = "Evaluated" if is_evaluated else "Submitted"
+                
                 action_str = str(rec.get('action', '')).lower()
                 remarks = str(rec.get('remarks', '')).lower()
                 
-                # SMART LOGIC: Always trust Samvidha's explicit Delete/Reupload flags
                 json_delete_flag = str(rec.get('delete', '0')) == '1'
                 can_delete = json_delete_flag or 'delete' in action_str or 'btn-danger' in action_str
                 can_reupload = 'reupload' in action_str or 're-upload' in action_str or 'update' in action_str or 'reupload' in remarks
                 
-                # STATUS LOGIC
                 if can_delete or can_reupload:
-                    status = "Submitted"  # It is definitely NOT evaluated yet if we can delete/reupload it
+                    status = "Submitted"  
                     if mark == "0": 
-                        mark = "-"  # Hide default '0' so it doesn't look like a real grade
+                        mark = "-"  
                 else:
                     status = "Evaluated" if mark and mark not in ["-", ""] else "Submitted"
                 
