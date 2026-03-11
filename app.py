@@ -284,23 +284,23 @@ def api_lab_subject_data():
             for rec in sub_json.get('data', []):
                 week_no = rec.get('week_no')
                 
-                # Check Evaluation Status
+                # STRICT EVALUATION CHECK: Must contain actual numbers in the marks field
                 mark = str(rec.get('mark', '')).strip()
-                is_evaluated = bool(mark and mark != '-')
+                is_evaluated = bool(re.search(r'\d', mark))
                 status = "Evaluated" if is_evaluated else "Submitted"
                 
-                # Check for explicit delete flag from JSON (used by the telegram bot), or fallback to evaluation status
-                json_delete_flag = rec.get('delete') in [1, '1', True]
-                can_delete = json_delete_flag or not is_evaluated
+                action_str = str(rec.get('action', '')).lower()
                 
-                # If evaluated, absolutely prevent deletion
+                # Check for explicit delete flag from JSON or if 'delete' is in the action HTML
+                json_delete_flag = str(rec.get('delete', '0')) == '1'
+                can_delete = json_delete_flag or 'delete' in action_str
+                
+                # If definitely evaluated, Samvidha generally prevents deletion
                 if is_evaluated:
                     can_delete = False
                 
-                # Check Remarks for Reupload
-                remarks = str(rec.get('remarks', '')).lower()
-                action_str = str(rec.get('action', '')).lower()
-                can_reupload = 'reupload' in remarks or 're-upload' in remarks or 'reupload' in action_str
+                # Check Remarks and Action String for Reupload
+                can_reupload = 'reupload' in action_str or 're-upload' in action_str or 'update' in action_str
                 
                 roll = ud.get('rollno', '').upper()
                 sem = ud.get('current_sem', '').upper()
@@ -310,7 +310,7 @@ def api_lab_subject_data():
                     "week_no": str(week_no),
                     "week": f"Week-{week_no}",
                     "title": rec.get('exp_title', f"Experiment {week_no}"),
-                    "marks": mark,
+                    "marks": mark if is_evaluated else "-",
                     "status": status,
                     "url": url,
                     "can_delete": can_delete,
