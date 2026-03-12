@@ -1,5 +1,6 @@
 import requests
 import os
+import concurrent.futures
 from flask import Flask, request, jsonify, abort
 from flask_cors import CORS
 from bs4 import BeautifulSoup
@@ -369,16 +370,32 @@ def api_all():
     session = SESSIONS[token]
     username = TOKENS[token]["username"]  
     
-    # Get results and merge memos into it
-    results_info = scrape_results(session)
-    results_info["memos"] = scrape_memos(session)
+    # Run all scraping tasks in parallel to make it SUPER FAST
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        future_attendance = executor.submit(scrape_attendance, session)
+        future_biometric = executor.submit(scrape_biometric, session)
+        future_midmarks = executor.submit(scrape_midmarks, session)
+        future_profile = executor.submit(scrape_profile, session, username)
+        future_results = executor.submit(scrape_results, session)
+        future_memos = executor.submit(scrape_memos, session)
+
+        # Wait for all tasks to complete and gather results
+        attendance_data = future_attendance.result()
+        biometric_data = future_biometric.result()
+        midmarks_data = future_midmarks.result()
+        profile_data = future_profile.result()
+        results_info = future_results.result()
+        memos_data = future_memos.result()
+
+    # Merge memos into results
+    results_info["memos"] = memos_data
     
     return jsonify({
         "ok": True,
-        "attendance": scrape_attendance(session),
-        "biometric": scrape_biometric(session), # Add Biometric data here
-        "midmarks": scrape_midmarks(session),
-        "profile": scrape_profile(session, username),
+        "attendance": attendance_data,
+        "biometric": biometric_data, 
+        "midmarks": midmarks_data,
+        "profile": profile_data,
         "results": results_info
     })
 
