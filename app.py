@@ -22,6 +22,7 @@ CORS(app)
 BASE = "https://samvidha.iare.ac.in"
 LOGIN_URL = BASE + "/pages/login/checkUser.php"
 
+# In-memory storage for tokens and sessions (For production, use Redis/Database)
 TOKENS = {}
 SESSIONS = {}
 
@@ -113,33 +114,78 @@ def scrape_midmarks(session):
     except Exception:
         return {"theory": [], "laboratory": []}
 
-def scrape_cgpa(session):
+def scrape_results(session):
+    """
+    Scrapes the SGPA, CGPA, and subjects (including backlogs) from the credit_register page.
+    """
     try:
-        # Common endpoints where CGPA might be hiding
-        endpoints = ["/home?action=result_ug", "/home?action=profile", "/home?action=res_std"]
-        for ep in endpoints:
-            r = session.get(BASE + ep, timeout=10)
-            if r.status_code == 200 and "CGPA" in r.text.upper():
-                soup = BeautifulSoup(r.text, "html.parser")
+        r = session.get(BASE + "/home?action=credit_register", timeout=15)
+        if r.status_code == 200 and "SEMESTER" in r.text.upper():
+            soup = BeautifulSoup(r.text, "html.parser")
+            
+            results_data = []
+            current_sem_data = None
+            overall_cgpa = "N/A"
+            
+            rows = soup.find_all('tr')
+            for row in rows:
+                text = row.get_text(separator=" ", strip=True).upper()
                 
-                # Hunt for the word "CGPA"
-                text_nodes = soup.find_all(string=re.compile(r'CGPA', re.IGNORECASE))
-                for node in text_nodes:
-                    parent_text = node.parent.get_text(separator=" ", strip=True)
+                # Detect Semester Headers (e.g., "I SEMESTER")
+                if "SEMESTER" in text and "AVERAGE" not in text and len(text.split()) <= 3:
+                    if current_sem_data:
+                        results_data.append(current_sem_data)
+                    current_sem_data = {
+                        "semester": text.strip(),
+                        "subjects": [],
+                        "sgpa": "N/A",
+                        "cgpa": "N/A"
+                    }
+                    continue
                     
-                    # Pattern 1: CGPA : 8.75
-                    match = re.search(r'CGPA\s*[:=-]?\s*([0-9]{1,2}\.[0-9]{1,2})', parent_text, re.IGNORECASE)
-                    if match:
-                        return match.group(1)
-                        
-                    # Pattern 2: Inside the next table cell <td>8.75</td>
-                    next_elem = node.parent.find_next_sibling(['td', 'th', 'span', 'div'])
-                    if next_elem:
-                        match = re.search(r'([0-9]{1,2}\.[0-9]{1,2})', next_elem.get_text(strip=True))
-                        if match: return match.group(1)
-        return "N/A"
-    except Exception:
-        return "N/A"
+                if not current_sem_data:
+                    continue
+                    
+                # Extract SGPA and CGPA
+                if "SEMESTER GRADE POINT AVERAGE" in text:
+                    match = re.search(r'SGPA[^\d]*([\d\.]+)', text)
+                    if match: current_sem_data["sgpa"] = match.group(1)
+                    continue
+                    
+                if "CUMULATIVE GRADE POINT AVERAGE" in text:
+                    match = re.search(r'CGPA[^\d]*([\d\.]+)', text)
+                    if match: 
+                        current_sem_data["cgpa"] = match.group(1)
+                        overall_cgpa = match.group(1) # Keep the latest CGPA
+                    continue
+                    
+                # Extract Subjects (rows starting with S.No)
+                cols = row.find_all(['td', 'th'])
+                if len(cols) >= 8 and cols[0].get_text(strip=True).isdigit():
+                    grade = cols[3].get_text(strip=True)
+                    status = cols[5].get_text(strip=True)
+                    # Flag as backlog if Grade or Status is 'F'
+                    is_backlog = status == 'F' or grade == 'F' or 'bg-danger' in str(row)
+                    
+                    current_sem_data["subjects"].append({
+                        "code": cols[1].get_text(strip=True),
+                        "name": cols[2].get_text(strip=True),
+                        "grade": grade,
+                        "points": cols[4].get_text(strip=True),
+                        "status": status,
+                        "credits": cols[6].get_text(strip=True),
+                        "is_backlog": is_backlog
+                    })
+            
+            # Append the last semester
+            if current_sem_data:
+                results_data.append(current_sem_data)
+                
+            return {"semesters": results_data, "overall_cgpa": overall_cgpa}
+            
+    except Exception as e:
+        print(f"Result Scraping Error: {e}")
+    return {"semesters": [], "overall_cgpa": "N/A"}
 
 def scrape_profile(session, username):
     try:
@@ -243,12 +289,13 @@ def api_all():
     token = require_token()
     session = SESSIONS[token]
     username = TOKENS[token]["username"]  
+    
     return jsonify({
         "ok": True,
         "attendance": scrape_attendance(session),
         "midmarks": scrape_midmarks(session),
         "profile": scrape_profile(session, username),
-        "cgpa": scrape_cgpa(session)
+        "results": scrape_results(session)
     })
 
 @app.route("/lab_init", methods=["GET"])
@@ -265,14 +312,14 @@ def api_lab_init():
             user_details[key] = inp['value'].strip() if inp else ""
             
         subjects = []
-        seen_subjects = set()  # SUPER IMPORTANT: DEDUPLICATION
+        seen_subjects = set()  # DEDUPLICATION
         select = soup.find('select', id='ddlsub_code')
         if select:
             for opt in select.find_all('option'):
                 val = opt.get('value', '').strip()
                 text = opt.get_text(strip=True)
                 if val and "Select Lab" not in text:
-                    if val not in seen_subjects:  # DEDUPLICATION CHECK
+                    if val not in seen_subjects:
                         seen_subjects.add(val)
                         if " - " in text:
                              text = text.split(" - ", 1)[1]
@@ -316,7 +363,6 @@ def api_lab_subject_data():
                 
                 mark = str(rec.get('mark', '')).strip()
                 is_evaluated = bool(re.search(r'\d', mark))
-                status = "Evaluated" if is_evaluated else "Submitted"
                 
                 action_str = str(rec.get('action', '')).lower()
                 remarks = str(rec.get('remarks', '')).lower()
