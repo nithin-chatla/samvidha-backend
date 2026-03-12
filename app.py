@@ -70,6 +70,43 @@ def scrape_attendance(session):
     except Exception:
         return []
 
+def scrape_biometric(session):
+    """
+    Scrapes the biometric attendance from /home?action=std_bio.
+    Extracts Date, In Time, Out Time, and Status.
+    """
+    try:
+        r = session.get(BASE + "/home?action=std_bio", timeout=15)
+        soup = BeautifulSoup(r.text, "html.parser")
+        bio_data = []
+        
+        # Find the table by looking for standard headers
+        for table in soup.find_all("table"):
+            headers_text = table.get_text(separator=" ", strip=True).lower()
+            if "date" in headers_text and "in time" in headers_text and "out time" in headers_text:
+                for tr in table.find_all("tr"):
+                    cols = tr.find_all("td")
+                    # Make sure it's a data row starting with an S.No
+                    if len(cols) >= 6 and cols[0].get_text(strip=True).isdigit():
+                        date = cols[3].get_text(strip=True)
+                        in_time = cols[4].get_text(strip=True)
+                        out_time = cols[5].get_text(strip=True)
+                        status = cols[6].get_text(strip=True) if len(cols) > 6 else "-"
+                        
+                        # Only add non-empty rows
+                        if date and date != "-":
+                            bio_data.append({
+                                "date": date,
+                                "in_time": in_time,
+                                "out_time": out_time,
+                                "status": status
+                            })
+                break
+        return bio_data
+    except Exception as e:
+        print(f"Biometric Scraping Error: {e}")
+        return []
+
 def scrape_midmarks(session):
     try:
         r = session.get(BASE + "/home?action=cie_marks_ug", timeout=15)
@@ -339,6 +376,7 @@ def api_all():
     return jsonify({
         "ok": True,
         "attendance": scrape_attendance(session),
+        "biometric": scrape_biometric(session), # Add Biometric data here
         "midmarks": scrape_midmarks(session),
         "profile": scrape_profile(session, username),
         "results": results_info
