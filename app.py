@@ -187,6 +187,48 @@ def scrape_results(session):
         print(f"Result Scraping Error: {e}")
     return {"semesters": [], "overall_cgpa": "N/A"}
 
+def scrape_memos(session):
+    """
+    Scrapes official result memos from the 'My Box' section.
+    """
+    try:
+        r = session.get(BASE + "/home?action=mybox", timeout=15)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            memos = []
+            for tr in soup.find_all("tr"):
+                cols = tr.find_all("td")
+                # Look for rows with at least 4 columns where the first column is an S.No digit
+                if len(cols) >= 4 and cols[0].get_text(strip=True).isdigit():
+                    name = cols[1].get_text(strip=True)
+                    date = cols[2].get_text(strip=True)
+                    href = None
+                    
+                    # Search for the view button/link
+                    btn = cols[3].find(["a", "button"])
+                    if btn:
+                        if btn.name == "a" and btn.get("href") and "javascript" not in btn.get("href").lower():
+                            href = btn["href"]
+                        elif btn.get("onclick"):
+                            match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", btn["onclick"])
+                            if match: href = match.group(1)
+                            
+                    # Fallback check
+                    if not href:
+                        a_tag = cols[3].find("a")
+                        if a_tag and a_tag.get("onclick"):
+                            match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", a_tag["onclick"])
+                            if match: href = match.group(1)
+
+                    if href:
+                        if href.startswith("/"): href = BASE + href
+                        elif not href.startswith("http"): href = BASE + "/" + href
+                        memos.append({"name": name, "date": date, "link": href})
+            return memos
+    except Exception as e:
+        print(f"Memo Scraping Error: {e}")
+    return []
+
 def scrape_profile(session, username):
     try:
         r = session.get(BASE + "/home?action=profile", timeout=15)
@@ -290,12 +332,16 @@ def api_all():
     session = SESSIONS[token]
     username = TOKENS[token]["username"]  
     
+    # Get results and merge memos into it
+    results_info = scrape_results(session)
+    results_info["memos"] = scrape_memos(session)
+    
     return jsonify({
         "ok": True,
         "attendance": scrape_attendance(session),
         "midmarks": scrape_midmarks(session),
         "profile": scrape_profile(session, username),
-        "results": scrape_results(session)
+        "results": results_info
     })
 
 @app.route("/lab_init", methods=["GET"])
