@@ -82,6 +82,12 @@ def scrape_biometric(session):
                 for tr in table.find_all("tr"):
                     cols = tr.find_all("td")
                     if len(cols) >= 6 and cols[0].get_text(strip=True).isdigit():
+                        
+                        # FIX: Grab the roll number and skip the row if it's blank/missing
+                        roll_no = cols[1].get_text(strip=True)
+                        if not roll_no or roll_no == "-":
+                            continue 
+                            
                         date = cols[3].get_text(strip=True)
                         in_time = cols[4].get_text(strip=True)
                         out_time = cols[5].get_text(strip=True)
@@ -97,6 +103,7 @@ def scrape_biometric(session):
                 break
         return bio_data
     except Exception as e:
+        print(f"Biometric Scraping Error: {e}")
         return []
 
 def scrape_midmarks(session):
@@ -354,16 +361,6 @@ def require_token():
     token = h.split(" ")[1]
     if token not in TOKENS: abort(401)
     return token
-# ==========================================
-# APP UPDATE CONFIGURATION
-# ==========================================
-@app.route("/check_update", methods=["GET"])
-def check_update():
-    return jsonify({
-        "version": "1.0.1",
-        "build_number": 1, # Increase this number whenever you release a new update!
-        "download_url": "https://paste-your-google-drive-link-here.com" # Put your APK link here
-    })
 
 @app.route("/login", methods=["POST"])
 def api_login():
@@ -615,5 +612,3 @@ def home(): return jsonify({"status": "API is running"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
-
