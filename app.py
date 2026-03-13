@@ -72,29 +72,22 @@ def scrape_attendance(session):
         return []
 
 def scrape_biometric(session):
-    """
-    Scrapes the biometric attendance from /home?action=std_bio.
-    Extracts Date, In Time, Out Time, and Status.
-    """
     try:
         r = session.get(BASE + "/home?action=std_bio", timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
         bio_data = []
         
-        # Find the table by looking for standard headers
         for table in soup.find_all("table"):
             headers_text = table.get_text(separator=" ", strip=True).lower()
             if "date" in headers_text and "in time" in headers_text and "out time" in headers_text:
                 for tr in table.find_all("tr"):
                     cols = tr.find_all("td")
-                    # Make sure it's a data row starting with an S.No
                     if len(cols) >= 6 and cols[0].get_text(strip=True).isdigit():
                         date = cols[3].get_text(strip=True)
                         in_time = cols[4].get_text(strip=True)
                         out_time = cols[5].get_text(strip=True)
                         status = cols[6].get_text(strip=True) if len(cols) > 6 else "-"
                         
-                        # Only add non-empty rows
                         if date and date != "-":
                             bio_data.append({
                                 "date": date,
@@ -153,9 +146,6 @@ def scrape_midmarks(session):
         return {"theory": [], "laboratory": []}
 
 def scrape_results(session):
-    """
-    Scrapes the SGPA, CGPA, and subjects (including backlogs) from the credit_register page.
-    """
     try:
         r = session.get(BASE + "/home?action=credit_register", timeout=15)
         if r.status_code == 200 and "SEMESTER" in r.text.upper():
@@ -169,22 +159,15 @@ def scrape_results(session):
             for row in rows:
                 text = row.get_text(separator=" ", strip=True).upper()
                 
-                # Detect Semester Headers (e.g., "I SEMESTER")
                 if "SEMESTER" in text and "AVERAGE" not in text and len(text.split()) <= 3:
                     if current_sem_data:
                         results_data.append(current_sem_data)
-                    current_sem_data = {
-                        "semester": text.strip(),
-                        "subjects": [],
-                        "sgpa": "N/A",
-                        "cgpa": "N/A"
-                    }
+                    current_sem_data = {"semester": text.strip(), "subjects": [], "sgpa": "N/A", "cgpa": "N/A"}
                     continue
                     
                 if not current_sem_data:
                     continue
                     
-                # Extract SGPA and CGPA
                 if "SEMESTER GRADE POINT AVERAGE" in text:
                     match = re.search(r'SGPA[^\d]*([\d\.]+)', text)
                     if match: current_sem_data["sgpa"] = match.group(1)
@@ -194,15 +177,13 @@ def scrape_results(session):
                     match = re.search(r'CGPA[^\d]*([\d\.]+)', text)
                     if match: 
                         current_sem_data["cgpa"] = match.group(1)
-                        overall_cgpa = match.group(1) # Keep the latest CGPA
+                        overall_cgpa = match.group(1) 
                     continue
                     
-                # Extract Subjects (rows starting with S.No)
                 cols = row.find_all(['td', 'th'])
                 if len(cols) >= 8 and cols[0].get_text(strip=True).isdigit():
                     grade = cols[3].get_text(strip=True)
                     status = cols[5].get_text(strip=True)
-                    # Flag as backlog if Grade or Status is 'F'
                     is_backlog = status == 'F' or grade == 'F' or 'bg-danger' in str(row)
                     
                     current_sem_data["subjects"].append({
@@ -215,7 +196,6 @@ def scrape_results(session):
                         "is_backlog": is_backlog
                     })
             
-            # Append the last semester
             if current_sem_data:
                 results_data.append(current_sem_data)
                 
@@ -226,9 +206,6 @@ def scrape_results(session):
     return {"semesters": [], "overall_cgpa": "N/A"}
 
 def scrape_memos(session):
-    """
-    Scrapes official result memos from the 'My Box' section.
-    """
     try:
         r = session.get(BASE + "/home?action=mybox", timeout=15)
         if r.status_code == 200:
@@ -236,13 +213,10 @@ def scrape_memos(session):
             memos = []
             for tr in soup.find_all("tr"):
                 cols = tr.find_all("td")
-                # Look for rows with at least 4 columns where the first column is an S.No digit
                 if len(cols) >= 4 and cols[0].get_text(strip=True).isdigit():
                     name = cols[1].get_text(strip=True)
                     date = cols[2].get_text(strip=True)
                     href = None
-                    
-                    # Search for the view button/link
                     btn = cols[3].find(["a", "button"])
                     if btn:
                         if btn.name == "a" and btn.get("href") and "javascript" not in btn.get("href").lower():
@@ -251,7 +225,6 @@ def scrape_memos(session):
                             match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", btn["onclick"])
                             if match: href = match.group(1)
                             
-                    # Fallback check
                     if not href:
                         a_tag = cols[3].find("a")
                         if a_tag and a_tag.get("onclick"):
@@ -352,6 +325,13 @@ def rasterize_and_compress_pdf(file_bytes):
     images[0].save(output_io, format="PDF", resolution=100.0, save_all=True, append_images=images[1:], quality=50, optimize=True)
     return output_io.getvalue()
 
+def require_token():
+    h = request.headers.get("Authorization", "")
+    if not h.startswith("Bearer "): abort(401)
+    token = h.split(" ")[1]
+    if token not in TOKENS: abort(401)
+    return token
+
 @app.route("/login", methods=["POST"])
 def api_login():
     data = request.get_json() or {}
@@ -364,13 +344,46 @@ def api_login():
     SESSIONS[token] = session
     return jsonify({"ok": True, "token": token})
 
+# =============== NEW LAZY LOADING ENDPOINTS ===================
+
+@app.route("/profile", methods=["GET"])
+def api_profile():
+    token = require_token()
+    session = SESSIONS[token]
+    username = TOKENS[token]["username"]
+    return jsonify({"profile": scrape_profile(session, username)})
+
+@app.route("/attendance", methods=["GET"])
+def api_attendance():
+    token = require_token()
+    session = SESSIONS[token]
+    return jsonify({
+        "attendance": scrape_attendance(session),
+        "biometric": scrape_biometric(session)
+    })
+
+@app.route("/results", methods=["GET"])
+def api_results():
+    token = require_token()
+    session = SESSIONS[token]
+    results_info = scrape_results(session)
+    results_info["memos"] = scrape_memos(session)
+    return jsonify({"results": results_info})
+
+@app.route("/marks", methods=["GET"])
+def api_marks():
+    token = require_token()
+    session = SESSIONS[token]
+    return jsonify({"midmarks": scrape_midmarks(session)})
+
+# ==============================================================
+
 @app.route("/all", methods=["GET"])
 def api_all():
     token = require_token()
     session = SESSIONS[token]
     username = TOKENS[token]["username"]  
     
-    # Run all scraping tasks in parallel to make it SUPER FAST
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
         future_attendance = executor.submit(scrape_attendance, session)
         future_biometric = executor.submit(scrape_biometric, session)
@@ -379,7 +392,6 @@ def api_all():
         future_results = executor.submit(scrape_results, session)
         future_memos = executor.submit(scrape_memos, session)
 
-        # Wait for all tasks to complete and gather results
         attendance_data = future_attendance.result()
         biometric_data = future_biometric.result()
         midmarks_data = future_midmarks.result()
@@ -387,7 +399,6 @@ def api_all():
         results_info = future_results.result()
         memos_data = future_memos.result()
 
-    # Merge memos into results
     results_info["memos"] = memos_data
     
     return jsonify({
@@ -413,7 +424,7 @@ def api_lab_init():
             user_details[key] = inp['value'].strip() if inp else ""
             
         subjects = []
-        seen_subjects = set()  # DEDUPLICATION
+        seen_subjects = set()
         select = soup.find('select', id='ddlsub_code')
         if select:
             for opt in select.find_all('option'):
@@ -570,13 +581,6 @@ def api_lab_delete():
         return jsonify({"ok": False, "error": res_json.get("msg", "Delete failed")})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
-
-def require_token():
-    h = request.headers.get("Authorization", "")
-    if not h.startswith("Bearer "): abort(401)
-    token = h.split(" ")[1]
-    if token not in TOKENS: abort(401)
-    return token
 
 @app.route("/", methods=["GET"])
 def home(): return jsonify({"status": "API is running"})
