@@ -242,116 +242,93 @@ def scrape_memos(session):
 
 def scrape_profile(session, username):
     """
-    Deep Scraper: Extracts all data from panels (General, Contacts) 
-    including standard tables and stacked text rows.
+    DEEP SCRAPER: Scrapes Standard Tables (General) AND Stacked Text Nodes (Contacts)
     """
     try:
         r = session.get(BASE + "/home?action=profile", timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
         profile = {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
         
-        # 1. Grab Top Header Info
-        header_card = soup.find("div", class_=lambda c: c and any(x in c.lower() for x in ['profile', 'user-info', 'card-body', 'panel-body']))
+        # 1. Grab Top Header Info (Name, Branch)
+        header_card = soup.find("div", class_=lambda c: c and any(x in c.lower() for x in ['profile', 'user-info', 'card-body']))
         if not header_card: header_card = soup
         name = header_card.find(["h3", "h4", "h5", "strong"])
         if name: profile["Header"]["Full Name"] = name.get_text(strip=True)
         branch = header_card.find(["h5", "p"])
         if branch: profile["Header"]["Department"] = branch.get_text(strip=True)
 
-        # 2. Find all Data Panels (General, Contacts, etc.)
-        panels = soup.find_all(["div", "section"], class_=lambda c: c and any(x in c.lower() for x in ['card', 'panel', 'box', 'wrap']))
-        if not panels: panels = [soup] # Fallback if UI changes
+        # 2. Extract Panel Data from Tables (e.g. The 'General' tab with borders)
+        for table in soup.find_all("table"):
+            # Try to identify the panel heading above the table
+            heading = table.find_previous(["h1", "h2", "h3", "h4", "h5", "h6", "div"], class_=lambda c: c and ('heading' in c.lower() or 'title' in c.lower() or 'panel-title' in c.lower()))
+            
+            panel = table.find_parent(["div"], class_=lambda c: c and 'panel' in c.lower())
+            if panel and not heading:
+                heading = panel.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and 'heading' in c.lower())
 
-        for panel in panels:
-            # Get the panel title
-            header = panel.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and any(x in c.lower() for x in ['header', 'heading', 'title', 'panel-heading']))
-            section_title = header.get_text(strip=True) if header else ""
-            if not section_title or len(section_title) > 50:
-                continue
-                
-            if section_title not in profile["Sections"]:
-                profile["Sections"][section_title] = {}
+            section_name = heading.get_text(strip=True) if heading else "Other Details"
+            if not section_name or len(section_name) > 40:
+                section_name = "Other Details"
 
-            # 3. Parse Tables inside the panel
-            for table in panel.find_all("table"):
-                for tr in table.find_all("tr"):
-                    cells = tr.find_all(["th", "td"], recursive=False)
-                    if not cells: continue
+            if section_name not in profile["Sections"]:
+                profile["Sections"][section_name] = {}
 
-                    # TYPE A: Normal 2+ column key-value row (e.g. General Details)
-                    if len(cells) >= 2:
-                        cell_texts = [c.get_text(separator=" ", strip=True) for c in cells]
-                        if cell_texts[0].lower().replace(".", "").replace(" ", "") in ["sno", "slno", "serialno", "#"]: continue
-
-                        key = cell_texts[1].replace(":", "").strip() if len(cells) >= 3 and cell_texts[0].isdigit() else cell_texts[0].replace(":", "").strip()
-                        val_elem = cells[-1] if len(cells) >= 3 and cell_texts[0].isdigit() else cells[1]
-
-                        if not key or key.lower() == section_title.lower() or len(key) > 60: continue
-
-                        val_text = val_elem.get_text(separator=" ", strip=True)
+            for tr in table.find_all("tr"):
+                cols = tr.find_all(["th", "td"])
+                if len(cols) >= 2:
+                    key = cols[0].get_text(strip=True).replace(":", "")
+                    val_elem = cols[-1] if len(cols) > 2 and cols[0].get_text(strip=True).isdigit() else cols[1]
+                    
+                    if key.lower() in ["s.no", "sno", "#", "sl.no", ""]: continue
+                    
+                    # Intercept Links/Documents
+                    a_tag = val_elem.find("a", href=True)
+                    if a_tag and "javascript" not in a_tag["href"].lower() and "#" not in a_tag["href"]:
+                        href = a_tag["href"]
+                        if href.startswith("/"): href = BASE + href
+                        elif not href.startswith("http"): href = BASE + "/" + href
                         
-                        # Handle hidden inputs if text is empty
-                        inputs = val_elem.find_all("input", type=lambda t: t and t.lower() != "hidden")
-                        if inputs: val_text = " ".join([inp.get("value", "").strip() for inp in inputs if inp.get("value")])
+                        doc_name = val_elem.get_text(strip=True)
+                        if not doc_name or doc_name.lower() in ["view", "download", "-"]:
+                            doc_name = key
+                        profile["Documents"][doc_name] = href
+                        continue
+                        
+                    # Standard key/value string parsing
+                    val = val_elem.get_text(separator=" ", strip=True)
+                    if val and val != "-" and len(key) < 50:
+                        profile["Sections"][section_name][key] = val
 
-                        # Handle Documents/Links inside tables
-                        href = None
-                        a_tag = val_elem.find("a", href=True)
-                        if a_tag and "javascript" not in a_tag["href"].lower() and "#" not in a_tag["href"]: 
-                            href = a_tag["href"]
-                        else:
-                            match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", str(val_elem))
-                            if match: href = match.group(1)
+        # 3. Extract Stacked Text Nodes (e.g. The 'Contacts' tab)
+        # These are usually bold titles with normal text beneath them in list tags
+        for strong in soup.find_all(["strong", "b"]):
+            key = strong.get_text(strip=True).replace(":", "")
+            if not key or len(key) > 40: continue
+            
+            parent = strong.parent
+            if parent.name in ["td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "a", "button"]: 
+                continue # Already scraped or irrelevant
+                
+            text_content = parent.get_text(separator="\n", strip=True)
+            # Remove the label part to leave just the pure value (like the address or phone number)
+            val = text_content.replace(strong.get_text(strip=True), "").strip().strip(":\n- ")
+            
+            if val and len(val) > 0 and len(val) < 200:
+                panel = parent.find_parent(["div"], class_=lambda c: c and 'panel' in c.lower())
+                section_name = "Contacts"
+                if panel:
+                    heading = panel.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and 'heading' in c.lower())
+                    if heading: section_name = heading.get_text(strip=True)
+                
+                if section_name not in profile["Sections"]:
+                    profile["Sections"][section_name] = {}
+                    
+                profile["Sections"][section_name][key] = val
 
-                        if href:
-                            if href.startswith("/"): href = BASE + href
-                            elif not href.startswith("http"): href = BASE + "/" + href
-                            doc_name = val_text if val_text and val_text.lower() not in ["view", "download", "click here", "-", ""] else key
-                            profile["Documents"][doc_name] = href
-                        else:
-                            if val_text and val_text.lower() not in ["view", "download", "-", ""]:
-                                profile["Sections"][section_title][key] = val_text
-                                
-                    # TYPE B: 1-column rows with stacked text (e.g. Contacts/Addresses)
-                    elif len(cells) == 1:
-                        cell = cells[0]
-                        strong = cell.find(["strong", "b"])
-                        if strong:
-                            key = strong.get_text(strip=True).replace(":", "")
-                            strong.extract() # remove key to get pure value
-                            val = cell.get_text(separator=" ", strip=True)
-                            if key and val and len(key) < 50:
-                                profile["Sections"][section_title][key] = val
-                        else:
-                            parts = cell.get_text(separator="\n", strip=True).split("\n", 1)
-                            if len(parts) == 2:
-                                key = parts[0].strip().replace(":", "")
-                                val = parts[1].strip()
-                                if key and val and len(key) < 50:
-                                    profile["Sections"][section_title][key] = val
-
-            # 4. Parse Lists (just in case Contacts uses ul/li instead of a table)
-            for ul in panel.find_all(["ul", "div"], class_=lambda c: c and any(x in c.lower() for x in ['list', 'group'])):
-                for li in ul.find_all(["li", "div"], recursive=False):
-                    strong = li.find(["strong", "b"])
-                    if strong:
-                        key = strong.get_text(strip=True).replace(":", "")
-                        strong.extract()
-                        val = li.get_text(separator=" ", strip=True)
-                        if key and val and len(key) < 50:
-                            profile["Sections"][section_title][key] = val
-                    else:
-                        parts = li.get_text(separator="\n", strip=True).split("\n", 1)
-                        if len(parts) == 2:
-                            key = parts[0].strip().replace(":", "")
-                            val = parts[1].strip()
-                            if key and val and len(key) < 50:
-                                profile["Sections"][section_title][key] = val
-
-        # Clean empty sections
+        # Clean up empty sections if any remain
         empty_keys = [k for k, v in profile["Sections"].items() if not v]
         for k in empty_keys: del profile["Sections"][k]
-        
+
         return profile
     except Exception as e:
         print(f"Profile Scraping Error: {e}")
@@ -391,8 +368,6 @@ def api_login():
     SESSIONS[token] = session
     return jsonify({"ok": True, "token": token})
 
-# =============== NEW LAZY LOADING ENDPOINTS ===================
-
 @app.route("/profile", methods=["GET"])
 def api_profile():
     token = require_token()
@@ -422,8 +397,6 @@ def api_marks():
     token = require_token()
     session = SESSIONS[token]
     return jsonify({"midmarks": scrape_midmarks(session)})
-
-# ==============================================================
 
 @app.route("/all", methods=["GET"])
 def api_all():
