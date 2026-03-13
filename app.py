@@ -23,7 +23,7 @@ CORS(app)
 BASE = "https://samvidha.iare.ac.in"
 LOGIN_URL = BASE + "/pages/login/checkUser.php"
 
-# In-memory storage for tokens and sessions (For production, use Redis/Database)
+# In-memory storage for tokens and sessions
 TOKENS = {}
 SESSIONS = {}
 
@@ -76,7 +76,6 @@ def scrape_biometric(session):
         r = session.get(BASE + "/home?action=std_bio", timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
         bio_data = []
-        
         for table in soup.find_all("table"):
             headers_text = table.get_text(separator=" ", strip=True).lower()
             if "date" in headers_text and "in time" in headers_text and "out time" in headers_text:
@@ -98,7 +97,6 @@ def scrape_biometric(session):
                 break
         return bio_data
     except Exception as e:
-        print(f"Biometric Scraping Error: {e}")
         return []
 
 def scrape_midmarks(session):
@@ -243,6 +241,7 @@ def scrape_memos(session):
 def scrape_profile(session, username):
     """
     DEEP SCRAPER: Scrapes Standard Tables (General) AND Stacked Text Nodes (Contacts)
+    Now fixed to avoid grabbing the S.No column.
     """
     try:
         r = session.get(BASE + "/home?action=profile", timeout=15)
@@ -259,9 +258,7 @@ def scrape_profile(session, username):
 
         # 2. Extract Panel Data from Tables (e.g. The 'General' tab with borders)
         for table in soup.find_all("table"):
-            # Try to identify the panel heading above the table
             heading = table.find_previous(["h1", "h2", "h3", "h4", "h5", "h6", "div"], class_=lambda c: c and ('heading' in c.lower() or 'title' in c.lower() or 'panel-title' in c.lower()))
-            
             panel = table.find_parent(["div"], class_=lambda c: c and 'panel' in c.lower())
             if panel and not heading:
                 heading = panel.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and 'heading' in c.lower())
@@ -276,8 +273,13 @@ def scrape_profile(session, username):
             for tr in table.find_all("tr"):
                 cols = tr.find_all(["th", "td"])
                 if len(cols) >= 2:
-                    key = cols[0].get_text(strip=True).replace(":", "")
-                    val_elem = cols[-1] if len(cols) > 2 and cols[0].get_text(strip=True).isdigit() else cols[1]
+                    # FIX: Handle cases where the first column is just a number (S.No)
+                    if cols[0].get_text(strip=True).isdigit() and len(cols) > 2:
+                        key = cols[1].get_text(strip=True).replace(":", "")
+                        val_elem = cols[-1]
+                    else:
+                        key = cols[0].get_text(strip=True).replace(":", "")
+                        val_elem = cols[1] if len(cols) == 2 else cols[-1]
                     
                     if key.lower() in ["s.no", "sno", "#", "sl.no", ""]: continue
                     
@@ -300,17 +302,15 @@ def scrape_profile(session, username):
                         profile["Sections"][section_name][key] = val
 
         # 3. Extract Stacked Text Nodes (e.g. The 'Contacts' tab)
-        # These are usually bold titles with normal text beneath them in list tags
         for strong in soup.find_all(["strong", "b"]):
             key = strong.get_text(strip=True).replace(":", "")
             if not key or len(key) > 40: continue
             
             parent = strong.parent
             if parent.name in ["td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "a", "button"]: 
-                continue # Already scraped or irrelevant
+                continue
                 
             text_content = parent.get_text(separator="\n", strip=True)
-            # Remove the label part to leave just the pure value (like the address or phone number)
             val = text_content.replace(strong.get_text(strip=True), "").strip().strip(":\n- ")
             
             if val and len(val) > 0 and len(val) < 200:
@@ -325,7 +325,6 @@ def scrape_profile(session, username):
                     
                 profile["Sections"][section_name][key] = val
 
-        # Clean up empty sections if any remain
         empty_keys = [k for k, v in profile["Sections"].items() if not v]
         for k in empty_keys: del profile["Sections"][k]
 
@@ -556,12 +555,11 @@ def api_lab_upload():
             print(f"Auto-compressing {file_size} bytes...")
             file_bytes = rasterize_and_compress_pdf(file_bytes)
             file_size = len(file_bytes)
-            print(f"Compressed down to: {file_size} bytes")
         except Exception as comp_err:
-            print(f"Auto-Compression Failed: {comp_err}")
+            pass
         
         if file_size > 1024 * 1024:
-            return jsonify({"ok": False, "error": "PDF too large. Auto-compression failed. Please compress manually."}), 400
+            return jsonify({"ok": False, "error": "PDF too large. Please compress manually."}), 400
 
     rollno = request.form.get('rollno', '').upper()
     week_no = request.form.get('week_no', '')
