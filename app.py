@@ -397,9 +397,9 @@ def require_token():
 @app.route("/check_update", methods=["GET"])
 def check_update():
     return jsonify({
-        "version": "1.0.1",
+        "version": "1.1",
         "build_number": 2, 
-        "download_url": "https://paste-your-google-drive-link-here.com" 
+        "download_url": "https://drive.google.com/file/d/18O0bHbrRHWATlkOkfT26PAEpwaPRrmiv/view?usp=sharing" 
     })
 
 @app.route("/login", methods=["POST"])
