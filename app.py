@@ -27,6 +27,28 @@ LOGIN_URL = BASE + "/pages/login/checkUser.php"
 TOKENS = {}
 SESSIONS = {}
 
+# ==========================================
+# SESSION EXPIRATION HANDLER
+# ==========================================
+class SessionExpiredError(Exception):
+    pass
+
+@app.errorhandler(SessionExpiredError)
+def handle_session_expired(e):
+    # This 401 triggers the Flutter app to silently auto-relogin!
+    return jsonify({"ok": False, "error": "session_expired"}), 401
+
+def check_auth(r):
+    url = r.url.lower()
+    # If the portal redirects us to the login page, the session is dead
+    if "login" in url or "index.php" in url or "checkuser" in url:
+        raise SessionExpiredError("Session expired")
+    # If the page contains a password input field, we are definitely on the login page
+    if '<input type="password"' in r.text.lower() or 'name="password"' in r.text.lower():
+        raise SessionExpiredError("Session expired")
+
+# ==========================================
+
 def login_session(username, password):
     session = requests.Session()
     headers = {
@@ -51,6 +73,8 @@ def login_session(username, password):
 def scrape_attendance(session):
     try:
         r = session.get(BASE + "/home?action=stud_att_STD", timeout=15)
+        check_auth(r)
+        
         soup = BeautifulSoup(r.text, "html.parser")
         attendance_data = []
         for table in soup.find_all("table"):
@@ -68,12 +92,16 @@ def scrape_attendance(session):
                         })
                 break
         return attendance_data
+    except SessionExpiredError:
+        raise
     except Exception:
         return []
 
 def scrape_biometric(session):
     try:
         r = session.get(BASE + "/home?action=std_bio", timeout=15)
+        check_auth(r)
+        
         soup = BeautifulSoup(r.text, "html.parser")
         bio_data = []
         for table in soup.find_all("table"):
@@ -82,8 +110,6 @@ def scrape_biometric(session):
                 for tr in table.find_all("tr"):
                     cols = tr.find_all("td")
                     if len(cols) >= 6 and cols[0].get_text(strip=True).isdigit():
-                        
-                        # FIX: Grab the roll number and skip the row if it's blank/missing
                         roll_no = cols[1].get_text(strip=True)
                         if not roll_no or roll_no == "-":
                             continue 
@@ -102,13 +128,16 @@ def scrape_biometric(session):
                             })
                 break
         return bio_data
+    except SessionExpiredError:
+        raise
     except Exception as e:
-        print(f"Biometric Scraping Error: {e}")
         return []
 
 def scrape_midmarks(session):
     try:
         r = session.get(BASE + "/home?action=cie_marks_ug", timeout=15)
+        check_auth(r)
+        
         soup = BeautifulSoup(r.text, "html.parser")
         rows = soup.find_all("tr")
         theory_data = []
@@ -147,12 +176,16 @@ def scrape_midmarks(session):
                     "Weeks": week_marks, "Marks": cols[-1].get_text(strip=True)
                 })
         return {"theory": theory_data, "laboratory": lab_data}
+    except SessionExpiredError:
+        raise
     except Exception:
         return {"theory": [], "laboratory": []}
 
 def scrape_results(session):
     try:
         r = session.get(BASE + "/home?action=credit_register", timeout=15)
+        check_auth(r)
+        
         if r.status_code == 200 and "SEMESTER" in r.text.upper():
             soup = BeautifulSoup(r.text, "html.parser")
             
@@ -206,6 +239,8 @@ def scrape_results(session):
                 
             return {"semesters": results_data, "overall_cgpa": overall_cgpa}
             
+    except SessionExpiredError:
+        raise
     except Exception as e:
         print(f"Result Scraping Error: {e}")
     return {"semesters": [], "overall_cgpa": "N/A"}
@@ -213,6 +248,8 @@ def scrape_results(session):
 def scrape_memos(session):
     try:
         r = session.get(BASE + "/home?action=mybox", timeout=15)
+        check_auth(r)
+        
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
             memos = []
@@ -241,21 +278,20 @@ def scrape_memos(session):
                         elif not href.startswith("http"): href = BASE + "/" + href
                         memos.append({"name": name, "date": date, "link": href})
             return memos
+    except SessionExpiredError:
+        raise
     except Exception as e:
-        print(f"Memo Scraping Error: {e}")
+        pass
     return []
 
 def scrape_profile(session, username):
-    """
-    DEEP SCRAPER: Scrapes Standard Tables (General) AND Stacked Text Nodes (Contacts)
-    Now fixed to avoid grabbing the S.No column.
-    """
     try:
         r = session.get(BASE + "/home?action=profile", timeout=15)
+        check_auth(r)
+        
         soup = BeautifulSoup(r.text, "html.parser")
         profile = {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
         
-        # 1. Grab Top Header Info (Name, Branch)
         header_card = soup.find("div", class_=lambda c: c and any(x in c.lower() for x in ['profile', 'user-info', 'card-body']))
         if not header_card: header_card = soup
         name = header_card.find(["h3", "h4", "h5", "strong"])
@@ -263,7 +299,6 @@ def scrape_profile(session, username):
         branch = header_card.find(["h5", "p"])
         if branch: profile["Header"]["Department"] = branch.get_text(strip=True)
 
-        # 2. Extract Panel Data from Tables (e.g. The 'General' tab with borders)
         for table in soup.find_all("table"):
             heading = table.find_previous(["h1", "h2", "h3", "h4", "h5", "h6", "div"], class_=lambda c: c and ('heading' in c.lower() or 'title' in c.lower() or 'panel-title' in c.lower()))
             panel = table.find_parent(["div"], class_=lambda c: c and 'panel' in c.lower())
@@ -280,7 +315,6 @@ def scrape_profile(session, username):
             for tr in table.find_all("tr"):
                 cols = tr.find_all(["th", "td"])
                 if len(cols) >= 2:
-                    # FIX: Handle cases where the first column is just a number (S.No)
                     if cols[0].get_text(strip=True).isdigit() and len(cols) > 2:
                         key = cols[1].get_text(strip=True).replace(":", "")
                         val_elem = cols[-1]
@@ -290,7 +324,6 @@ def scrape_profile(session, username):
                     
                     if key.lower() in ["s.no", "sno", "#", "sl.no", ""]: continue
                     
-                    # Intercept Links/Documents
                     a_tag = val_elem.find("a", href=True)
                     if a_tag and "javascript" not in a_tag["href"].lower() and "#" not in a_tag["href"]:
                         href = a_tag["href"]
@@ -303,12 +336,10 @@ def scrape_profile(session, username):
                         profile["Documents"][doc_name] = href
                         continue
                         
-                    # Standard key/value string parsing
                     val = val_elem.get_text(separator=" ", strip=True)
                     if val and val != "-" and len(key) < 50:
                         profile["Sections"][section_name][key] = val
 
-        # 3. Extract Stacked Text Nodes (e.g. The 'Contacts' tab)
         for strong in soup.find_all(["strong", "b"]):
             key = strong.get_text(strip=True).replace(":", "")
             if not key or len(key) > 40: continue
@@ -336,8 +367,9 @@ def scrape_profile(session, username):
         for k in empty_keys: del profile["Sections"][k]
 
         return profile
+    except SessionExpiredError:
+        raise
     except Exception as e:
-        print(f"Profile Scraping Error: {e}")
         return {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
 
 def rasterize_and_compress_pdf(file_bytes):
@@ -361,6 +393,14 @@ def require_token():
     token = h.split(" ")[1]
     if token not in TOKENS: abort(401)
     return token
+
+@app.route("/check_update", methods=["GET"])
+def check_update():
+    return jsonify({
+        "version": "1.0.1",
+        "build_number": 2, 
+        "download_url": "https://paste-your-google-drive-link-here.com" 
+    })
 
 @app.route("/login", methods=["POST"])
 def api_login():
@@ -410,31 +450,34 @@ def api_all():
     session = SESSIONS[token]
     username = TOKENS[token]["username"]  
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-        future_attendance = executor.submit(scrape_attendance, session)
-        future_biometric = executor.submit(scrape_biometric, session)
-        future_midmarks = executor.submit(scrape_midmarks, session)
-        future_profile = executor.submit(scrape_profile, session, username)
-        future_results = executor.submit(scrape_results, session)
-        future_memos = executor.submit(scrape_memos, session)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+            future_attendance = executor.submit(scrape_attendance, session)
+            future_biometric = executor.submit(scrape_biometric, session)
+            future_midmarks = executor.submit(scrape_midmarks, session)
+            future_profile = executor.submit(scrape_profile, session, username)
+            future_results = executor.submit(scrape_results, session)
+            future_memos = executor.submit(scrape_memos, session)
 
-        attendance_data = future_attendance.result()
-        biometric_data = future_biometric.result()
-        midmarks_data = future_midmarks.result()
-        profile_data = future_profile.result()
-        results_info = future_results.result()
-        memos_data = future_memos.result()
+            attendance_data = future_attendance.result()
+            biometric_data = future_biometric.result()
+            midmarks_data = future_midmarks.result()
+            profile_data = future_profile.result()
+            results_info = future_results.result()
+            memos_data = future_memos.result()
 
-    results_info["memos"] = memos_data
-    
-    return jsonify({
-        "ok": True,
-        "attendance": attendance_data,
-        "biometric": biometric_data, 
-        "midmarks": midmarks_data,
-        "profile": profile_data,
-        "results": results_info
-    })
+        results_info["memos"] = memos_data
+        
+        return jsonify({
+            "ok": True,
+            "attendance": attendance_data,
+            "biometric": biometric_data, 
+            "midmarks": midmarks_data,
+            "profile": profile_data,
+            "results": results_info
+        })
+    except SessionExpiredError:
+        abort(401)
 
 @app.route("/lab_init", methods=["GET"])
 def api_lab_init():
@@ -442,8 +485,9 @@ def api_lab_init():
     session = SESSIONS[token]
     try:
         r = session.get(BASE + "/home?action=labrecord_std", timeout=15)
-        soup = BeautifulSoup(r.text, "html.parser")
+        check_auth(r)
         
+        soup = BeautifulSoup(r.text, "html.parser")
         user_details = {}
         for key in ['ay', 'rollno', 'current_sem', 'lab_batch_no', 'dept_id', 'sec']:
             inp = soup.find('input', id=key)
@@ -464,6 +508,8 @@ def api_lab_init():
                         subjects.append({"value": val, "label": text})
                     
         return jsonify({"ok": True, "user_details": user_details, "subjects": subjects})
+    except SessionExpiredError:
+        raise
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
@@ -483,6 +529,8 @@ def api_lab_subject_data():
     
     try:
         exp_res = session.post(ajax_url, headers=headers, data={'ay': ud.get('ay'), 'sub_code': sub_code, 'action': 'get_exp_list'}, timeout=15)
+        check_auth(exp_res)
+        
         if exp_res.status_code == 200:
             soup = BeautifulSoup(exp_res.text, 'html.parser')
             for tr in soup.find_all('tr')[1:]:
@@ -494,6 +542,8 @@ def api_lab_subject_data():
                     schedule_list.append({"week": week, "title": title, "date": date})
 
         sub_res = session.post(ajax_url, headers=headers, data={'rollno': ud.get('rollno'), 'ay': ud.get('ay'), 'sub_code': sub_code, 'action': 'day2day_lab'}, timeout=15)
+        check_auth(sub_res)
+        
         if sub_res.status_code == 200:
             sub_json = sub_res.json()
             for rec in sub_json.get('data', []):
@@ -537,6 +587,8 @@ def api_lab_subject_data():
                     sub['title'] = sch['title']
                     
         return jsonify({"ok": True, "schedule": schedule_list, "submitted": submitted_list})
+    except SessionExpiredError:
+        raise
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
@@ -577,10 +629,13 @@ def api_lab_upload():
 
     try:
         res = session.post(ajax_url, files=upload_payload, timeout=30)
+        check_auth(res)
         res_json = res.json()
         if res_json.get("status") == "success":
             return jsonify({"ok": True, "message": "Uploaded successfully to Samvidha!"})
         return jsonify({"ok": False, "error": res_json.get("msg", "Upload failed")})
+    except SessionExpiredError:
+        raise
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -600,10 +655,13 @@ def api_lab_delete():
     
     try:
         res = session.post(ajax_url, data=payload, headers=headers, timeout=15)
+        check_auth(res)
         res_json = res.json()
         if res_json.get("status") == "success":
             return jsonify({"ok": True, "message": "Deleted successfully from Samvidha!"})
         return jsonify({"ok": False, "error": res_json.get("msg", "Delete failed")})
+    except SessionExpiredError:
+        raise
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
