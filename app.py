@@ -35,15 +35,12 @@ class SessionExpiredError(Exception):
 
 @app.errorhandler(SessionExpiredError)
 def handle_session_expired(e):
-    # This 401 triggers the Flutter app to silently auto-relogin!
     return jsonify({"ok": False, "error": "session_expired"}), 401
 
 def check_auth(r):
     url = r.url.lower()
-    # If the portal redirects us to the login page, the session is dead
     if "login" in url or "index.php" in url or "checkuser" in url:
         raise SessionExpiredError("Session expired")
-    # If the page contains a password input field, we are definitely on the login page
     if '<input type="password"' in r.text.lower() or 'name="password"' in r.text.lower():
         raise SessionExpiredError("Session expired")
 
@@ -675,7 +672,6 @@ def api_admit_card_init():
         soup = BeautifulSoup(r.text, "html.parser")
         exam_types = []
         
-        # Scrape examination types (usually the first select tag on the page)
         selects = soup.find_all("select")
         if len(selects) >= 1:
             for opt in selects[0].find_all("option"):
@@ -698,21 +694,30 @@ def api_admit_card_codes():
     exam_type = data.get("exam_type", "")
     
     try:
-        # Simulate Samvidha's background AJAX request to fetch exam codes
         ajax_url = BASE + "/pages/student/admit_card/ajax/admit_card.php"
-        payload = {"action": "get_exam_codes", "exam_type": exam_type}
-        headers = {'x-requested-with': 'XMLHttpRequest'}
+        headers = {
+            'x-requested-with': 'XMLHttpRequest',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+        }
         
-        r = session.post(ajax_url, data=payload, headers=headers, timeout=15)
         exam_codes = []
-        if r.status_code == 200 and "<option" in r.text:
-            soup = BeautifulSoup(r.text, "html.parser")
-            for opt in soup.find_all("option"):
-                val = opt.get("value", "").strip()
-                txt = opt.get_text(strip=True)
-                if val and "Select" not in txt:
-                    exam_codes.append({"value": val, "label": txt})
+        
+        # BRUTE FORCE TESTER: Tries all known Samvidha payload action names
+        for action in ["get_examcode", "get_exam_codes", "get_exam_code", "get_examcode_std"]:
+            payload = {"action": action, "exam_type": exam_type}
+            r = session.post(ajax_url, data=payload, headers=headers, timeout=15)
             
+            if r.status_code == 200 and "<option" in r.text:
+                soup = BeautifulSoup(r.text, "html.parser")
+                for opt in soup.find_all("option"):
+                    val = opt.get("value", "").strip()
+                    txt = opt.get_text(strip=True)
+                    if val and "Select" not in txt:
+                        exam_codes.append({"value": val, "label": txt})
+            
+            if exam_codes: 
+                break # Stop searching, we found the right payload!
+                
         return jsonify({"ok": True, "exam_codes": exam_codes})
     except SessionExpiredError:
         raise
@@ -728,36 +733,40 @@ def api_admit_card_fetch():
     exam_code = data.get("exam_code", "")
     
     try:
-        # Request the hall ticket link
         ajax_url = BASE + "/pages/student/admit_card/ajax/admit_card.php"
-        payload = {"action": "get_hallticket", "exam_type": exam_type, "exam_code": exam_code}
-        headers = {'x-requested-with': 'XMLHttpRequest'}
-        r = session.post(ajax_url, data=payload, headers=headers, timeout=15)
+        headers = {
+            'x-requested-with': 'XMLHttpRequest',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+        }
         
-        soup = BeautifulSoup(r.text, "html.parser")
+        url_link = ""
+        error_msg = "Hall ticket is not available for this selection."
         
-        # Check for red error text
-        error_msg = soup.find(text=re.compile(r"Not Yet Ready|Error", re.I))
-        if error_msg:
-            return jsonify({"ok": False, "error": error_msg.strip()})
+        for action in ["get_hallticket", "print_hallticket", "get_admit_card"]:
+            payload = {"action": action, "exam_type": exam_type, "exam_code": exam_code}
+            r = session.post(ajax_url, data=payload, headers=headers, timeout=15)
             
-        # Look for Print button and extract direct PDF/Window link
-        print_btn = soup.find("a", text=re.compile(r"Print", re.I)) or soup.find("button", text=re.compile(r"Print", re.I))
-        if print_btn:
-            href = print_btn.get("href")
-            onclick = print_btn.get("onclick")
-            link = ""
-            if href and "javascript" not in href: link = href
-            elif onclick:
-                match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", onclick)
-                if match: link = match.group(1)
-
-            if link:
-                if link.startswith("/"): link = BASE + link
-                elif not link.startswith("http"): link = BASE + "/" + link
-                return jsonify({"ok": True, "url": link})
+            soup = BeautifulSoup(r.text, "html.parser")
+            err_node = soup.find(text=re.compile(r"Not Yet Ready|Error", re.I))
+            if err_node:
+                error_msg = err_node.strip()
+                continue
                 
-        return jsonify({"ok": False, "error": "Hall ticket is not available for this selection."})
+            print_btn = soup.find("a", text=re.compile(r"Print", re.I)) or soup.find("button", text=re.compile(r"Print", re.I))
+            if print_btn:
+                href = print_btn.get("href")
+                onclick = print_btn.get("onclick")
+                if href and "javascript" not in href: url_link = href
+                elif onclick:
+                    match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", onclick)
+                    if match: url_link = match.group(1)
+
+                if url_link:
+                    if url_link.startswith("/"): url_link = BASE + url_link
+                    elif not url_link.startswith("http"): url_link = BASE + "/" + url_link
+                    return jsonify({"ok": True, "url": url_link})
+                    
+        return jsonify({"ok": False, "error": error_msg})
     except SessionExpiredError:
         raise
     except Exception as e:
