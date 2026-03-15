@@ -221,58 +221,72 @@ def scrape_memos(session):
     try:
         r = session.get(BASE + "/home?action=mybox", timeout=15)
         check_auth(r)
+        memos = []
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
-            memos = []
             
-            # Find all tables to ensure we don't accidentally parse the empty Revaluation table
-            for table in soup.find_all("table"):
-                headers_text = table.get_text(separator=" ", strip=True).lower()
+            # Robust table row parser avoiding hidden columns
+            for tr in soup.find_all("tr"):
+                cols = tr.find_all("td")
+                if len(cols) < 3: continue
                 
-                # Check if this table has the "My Box" headers
-                if "view file" in headers_text or "name" in headers_text:
-                    for tr in table.find_all("tr"):
-                        cols = tr.find_all("td")
-                        if len(cols) < 3: continue
+                # Intelligent anchor: Find the column with a Date format
+                date_idx = -1
+                date_str = ""
+                for i, col in enumerate(cols):
+                    txt = col.get_text(strip=True)
+                    # Matches DD-MM-YYYY or DD/MM/YYYY
+                    if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
+                        date_idx = i
+                        date_str = txt
+                        break
                         
-                        # Find where the data actually starts (ignoring invisible Datatable spacer columns)
-                        start_idx = -1
-                        for i, col in enumerate(cols):
-                            if col.get_text(strip=True).isdigit():
-                                start_idx = i
+                if date_idx > 0:
+                    name = cols[date_idx - 1].get_text(strip=True)
+                    
+                    href = None
+                    btn_container = cols[-1] # View button is typically in the very last column
+                    
+                    for element in btn_container.find_all(True):
+                        if element.get("onclick"):
+                            match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", element["onclick"])
+                            if match:
+                                href = match.group(1)
+                                break
+                        elif element.name == "a" and element.get("href"):
+                            h = element["href"]
+                            if "javascript" not in h.lower() and h != "#":
+                                href = h
                                 break
                                 
-                        if start_idx == -1: continue
-                        
-                        name = ""
-                        date = ""
-                        if len(cols) >= start_idx + 3:
-                            name = cols[start_idx + 1].get_text(strip=True)
-                            date = cols[start_idx + 2].get_text(strip=True)
-                        
-                        href = None
-                        btn_container = cols[-1] # The eye button is always in the absolute last column
-                        
-                        # Deep scan the container for ANY valid link or window.open click event
-                        for element in btn_container.find_all(True):
-                            if element.get("onclick"):
-                                match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", element["onclick"])
-                                if match:
-                                    href = match.group(1)
-                                    break
-                            elif element.name == "a" and element.get("href"):
-                                h = element["href"]
-                                if "javascript" not in h.lower() and h != "#":
-                                    href = h
-                                    break
-                                    
-                        if href:
-                            if href.startswith("/"): href = BASE + href
-                            elif not href.startswith("http"): href = BASE + "/" + href
-                            memos.append({"name": name, "date": date, "link": href})
+                    # Deep fallback: scan the entire row's HTML for hidden links
+                    if not href:
+                        match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", str(tr), re.I)
+                        if match:
+                            href = match.group(1)
+                        else:
+                            match = re.search(r"['\"]([^'\"]+\.pdf)['\"]", str(tr), re.I)
+                            if match:
+                                href = match.group(1)
                             
-                    if memos: break # Found data, break out of table loop
-            return memos
+                    if href:
+                        if href.startswith("/"): href = BASE + href
+                        elif not href.startswith("http"): href = BASE + "/" + href
+                        
+                        if not any(m['link'] == href for m in memos):
+                            memos.append({"name": name, "date": date_str, "link": href})
+
+            # Extreme Fallback for dynamically loaded JS arrays
+            if not memos:
+                links = re.findall(r"window\.open\(['\"]([^'\"]+)['\"]", r.text, re.I)
+                for idx, link in enumerate(links):
+                    if ".pdf" in link.lower() or "print" in link.lower() or "view" in link.lower():
+                        if link.startswith("/"): link = BASE + link
+                        elif not link.startswith("http"): link = BASE + "/" + link
+                        if not any(m['link'] == link for m in memos):
+                            memos.append({"name": f"Document {idx+1}", "date": "Available", "link": link})
+                            
+        return memos
     except Exception as e:
         print(f"Memos Error: {e}")
     return []
