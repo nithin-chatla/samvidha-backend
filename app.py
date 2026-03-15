@@ -225,56 +225,55 @@ def scrape_memos(session):
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
             
+            # STRATEGY 1: Deep scan of HTML table rows
             for tr in soup.find_all("tr"):
-                cols = tr.find_all("td")
-                if len(cols) < 3: continue
+                raw_html = str(tr)
                 
-                date_idx = -1
-                date_str = ""
-                for i, col in enumerate(cols):
-                    txt = col.get_text(strip=True)
-                    if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
-                        date_idx = i
-                        date_str = txt
-                        break
-                        
-                if date_idx > 0:
-                    name = cols[date_idx - 1].get_text(strip=True)
-                    
+                # Check if this row belongs to the Memos table by finding keywords
+                if "B. TECH" in raw_html.upper() or "EXAMINATIONS" in raw_html.upper() or "SEMESTER" in raw_html.upper():
+                    name = "Official Document"
+                    date_str = "Available"
                     href = None
                     
-                    # Deep scan the ENTIRE row instead of just the last column. 
-                    # DataTables adds invisible control columns on mobile that break index-based scraping!
-                    for element in tr.find_all(["a", "button"]):
-                        if element.get("onclick"):
-                            match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", element["onclick"])
-                            if match:
-                                href = match.group(1)
-                                break
-                        elif element.name == "a" and element.get("href"):
-                            h = element["href"]
+                    # Safely extract text nodes to find Name and Date ignoring hidden datatable columns
+                    for txt in tr.stripped_strings:
+                        if "B. TECH" in txt.upper() or "EXAMINATIONS" in txt.upper():
+                            name = txt
+                        # Regex match for Date format DD-MM-YYYY
+                        if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
+                            date_str = txt
+                            
+                    # Aggressively hunt for the View File link in the raw row HTML
+                    match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", raw_html, re.I)
+                    if match:
+                        href = match.group(1)
+                    else:
+                        for a in tr.find_all(["a", "button"], href=True):
+                            h = a["href"]
                             if "javascript" not in h.lower() and h != "#":
                                 href = h
                                 break
                                 
-                    # Deep fallback: scan the entire row's raw HTML for hidden links
-                    if not href:
-                        raw_html = str(tr)
-                        match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", raw_html, re.I)
-                        if match:
-                            href = match.group(1)
-                        else:
-                            match = re.search(r"href=['\"]([^'\"]+\.pdf)['\"]", raw_html, re.I)
-                            if match:
-                                href = match.group(1)
-                            
                     if href:
                         if href.startswith("/"): href = BASE + href
                         elif not href.startswith("http"): href = BASE + "/" + href
                         
+                        # Prevent duplicates
                         if not any(m['link'] == href for m in memos):
                             memos.append({"name": name, "date": date_str, "link": href})
 
+            # STRATEGY 2: If the table was empty because of Javascript loading (AJAX fallback)
+            if not memos:
+                # Scan entire raw page HTML for things that look like MyBox popup links
+                links = re.findall(r"window\.open\(['\"]([^'\"]+)['\"]", r.text, re.I)
+                for idx, link in enumerate(links):
+                    if "mybox" in link.lower() or "print" in link.lower() or "view" in link.lower() or "pdf" in link.lower():
+                        if link.startswith("/"): link = BASE + link
+                        elif not link.startswith("http"): link = BASE + "/" + link
+                        
+                        if not any(m['link'] == link for m in memos):
+                            memos.append({"name": f"Official Grade Memo {idx+1}", "date": "Tap to view", "link": link})
+                            
             return memos
     except Exception as e:
         print(f"Memos Error: {e}")
