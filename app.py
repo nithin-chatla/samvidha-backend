@@ -397,9 +397,9 @@ def require_token():
 @app.route("/check_update", methods=["GET"])
 def check_update():
     return jsonify({
-        "version": "1.1",
+        "version": "1.0.1",
         "build_number": 2, 
-        "download_url": "https://drive.google.com/file/d/18O0bHbrRHWATlkOkfT26PAEpwaPRrmiv/view?usp=sharing" 
+        "download_url": "https://paste-your-google-drive-link-here.com" 
     })
 
 @app.route("/login", methods=["POST"])
@@ -660,6 +660,104 @@ def api_lab_delete():
         if res_json.get("status") == "success":
             return jsonify({"ok": True, "message": "Deleted successfully from Samvidha!"})
         return jsonify({"ok": False, "error": res_json.get("msg", "Delete failed")})
+    except SessionExpiredError:
+        raise
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/admit_card_init", methods=["GET"])
+def api_admit_card_init():
+    token = require_token()
+    session = SESSIONS[token]
+    try:
+        r = session.get(BASE + "/home?action=admit_card_std", timeout=15)
+        check_auth(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        exam_types = []
+        
+        # Scrape examination types (usually the first select tag on the page)
+        selects = soup.find_all("select")
+        if len(selects) >= 1:
+            for opt in selects[0].find_all("option"):
+                val = opt.get("value", "").strip()
+                txt = opt.get_text(strip=True)
+                if val and "Select" not in txt:
+                    exam_types.append({"value": val, "label": txt})
+                    
+        return jsonify({"ok": True, "exam_types": exam_types})
+    except SessionExpiredError:
+        raise
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/admit_card_codes", methods=["POST"])
+def api_admit_card_codes():
+    token = require_token()
+    session = SESSIONS[token]
+    data = request.get_json() or {}
+    exam_type = data.get("exam_type", "")
+    
+    try:
+        # Simulate Samvidha's background AJAX request to fetch exam codes
+        ajax_url = BASE + "/pages/student/admit_card/ajax/admit_card.php"
+        payload = {"action": "get_exam_codes", "exam_type": exam_type}
+        headers = {'x-requested-with': 'XMLHttpRequest'}
+        
+        r = session.post(ajax_url, data=payload, headers=headers, timeout=15)
+        exam_codes = []
+        if r.status_code == 200 and "<option" in r.text:
+            soup = BeautifulSoup(r.text, "html.parser")
+            for opt in soup.find_all("option"):
+                val = opt.get("value", "").strip()
+                txt = opt.get_text(strip=True)
+                if val and "Select" not in txt:
+                    exam_codes.append({"value": val, "label": txt})
+            
+        return jsonify({"ok": True, "exam_codes": exam_codes})
+    except SessionExpiredError:
+        raise
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/admit_card_fetch", methods=["POST"])
+def api_admit_card_fetch():
+    token = require_token()
+    session = SESSIONS[token]
+    data = request.get_json() or {}
+    exam_type = data.get("exam_type", "")
+    exam_code = data.get("exam_code", "")
+    
+    try:
+        # Request the hall ticket link
+        ajax_url = BASE + "/pages/student/admit_card/ajax/admit_card.php"
+        payload = {"action": "get_hallticket", "exam_type": exam_type, "exam_code": exam_code}
+        headers = {'x-requested-with': 'XMLHttpRequest'}
+        r = session.post(ajax_url, data=payload, headers=headers, timeout=15)
+        
+        soup = BeautifulSoup(r.text, "html.parser")
+        
+        # Check for red error text
+        error_msg = soup.find(text=re.compile(r"Not Yet Ready|Error", re.I))
+        if error_msg:
+            return jsonify({"ok": False, "error": error_msg.strip()})
+            
+        # Look for Print button and extract direct PDF/Window link
+        print_btn = soup.find("a", text=re.compile(r"Print", re.I)) or soup.find("button", text=re.compile(r"Print", re.I))
+        if print_btn:
+            href = print_btn.get("href")
+            onclick = print_btn.get("onclick")
+            link = ""
+            if href and "javascript" not in href: link = href
+            elif onclick:
+                match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", onclick)
+                if match: link = match.group(1)
+
+            if link:
+                if link.startswith("/"): link = BASE + link
+                elif not link.startswith("http"): link = BASE + "/" + link
+                return jsonify({"ok": True, "url": link})
+                
+        return jsonify({"ok": False, "error": "Hall ticket is not available for this selection."})
     except SessionExpiredError:
         raise
     except Exception as e:
