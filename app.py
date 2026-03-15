@@ -399,7 +399,7 @@ def require_token():
 
 @app.route("/check_update", methods=["GET"])
 def check_update():
-    return jsonify({"version": "2.0.0", "build_number": 2, "download_url": "https://paste-your-google-drive-link-here.com"})
+    return jsonify({"version": "2.0.0", "build_number": 3, "download_url": "https://paste-your-google-drive-link-here.com"})
 
 @app.route("/login", methods=["POST"])
 def api_login():
