@@ -696,6 +696,7 @@ def api_admit_card_init():
         return jsonify({"ok": False, "error": str(e)})
 
 @app.route("/admit_card_codes", methods=["POST"])
+@app.route("/admit_card_codes", methods=["POST"])
 def api_admit_card_codes():
     token = require_token()
     session = SESSIONS[token]
@@ -703,6 +704,8 @@ def api_admit_card_codes():
     exam_type = data.get("exam_type", "")
     
     try:
+        # STRICTLY target the background AJAX endpoint. No fallback to main page!
+        ajax_url = BASE + "/pages/student/admit_card/ajax/admit_card.php"
         headers = {
             'x-requested-with': 'XMLHttpRequest',
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
@@ -710,31 +713,25 @@ def api_admit_card_codes():
         
         exam_codes = []
         
-        # BRUTE FORCE TESTER: Test all Samvidha action/payload combinations
-        urls_to_test = [
-            BASE + "/pages/student/admit_card/ajax/admit_card.php",
-            BASE + "/pages/student/admit_card/ajax/admitcard.php",
-            BASE + "/home?action=admit_card_std"
-        ]
-        
         actions = ["get_examcode", "get_exam_codes", "get_exam_code", "get_examcode_std"]
         params = ["exam_type", "type", "examType"]
         
-        for url in urls_to_test:
-            for action in actions:
-                for param in params:
-                    payload = {"action": action, param: exam_type}
-                    r = session.post(url, data=payload, headers=headers, timeout=5)
-                    
-                    if r.status_code == 200 and "<option" in r.text.lower():
-                        soup = BeautifulSoup(r.text, "html.parser")
-                        for opt in soup.find_all("option"):
-                            val = opt.get("value", "").strip()
-                            txt = opt.get_text(strip=True)
-                            if val and "Select" not in txt:
-                                exam_codes.append({"value": val, "label": txt})
-                    
-                    if exam_codes: break
+        for action in actions:
+            for param in params:
+                payload = {"action": action, param: exam_type}
+                r = session.post(ajax_url, data=payload, headers=headers, timeout=5)
+                
+                # Check if it returned options, AND make sure it didn't accidentally return the main page
+                if r.status_code == 200 and "<option" in r.text.lower() and "examination type" not in r.text.lower():
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    for opt in soup.find_all("option"):
+                        val = opt.get("value", "").strip()
+                        txt = opt.get_text(strip=True)
+                        
+                        # Filter out empty values and duplicate Exam Types just in case
+                        if val and "Select" not in txt and txt.upper() not in ["CIE-I", "CIE-II", "SEE", "MAKEUP", "REMEDIAL"]:
+                            exam_codes.append({"value": val, "label": txt})
+                
                 if exam_codes: break
             if exam_codes: break
                 
