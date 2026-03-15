@@ -15,7 +15,6 @@ try:
 except ImportError:
     fitz = None
     Image = None
-    print("Warning: PyMuPDF or Pillow is not installed. Auto-compression disabled.")
 
 app = Flask(__name__)
 CORS(app)
@@ -23,15 +22,10 @@ CORS(app)
 BASE = "https://samvidha.iare.ac.in"
 LOGIN_URL = BASE + "/pages/login/checkUser.php"
 
-# In-memory storage for tokens and sessions
 TOKENS = {}
 SESSIONS = {}
 
-# ==========================================
-# SESSION EXPIRATION HANDLER
-# ==========================================
-class SessionExpiredError(Exception):
-    pass
+class SessionExpiredError(Exception): pass
 
 @app.errorhandler(SessionExpiredError)
 def handle_session_expired(e):
@@ -43,8 +37,6 @@ def check_auth(r):
         raise SessionExpiredError("Session expired")
     if '<input type="password"' in r.text.lower() or 'name="password"' in r.text.lower():
         raise SessionExpiredError("Session expired")
-
-# ==========================================
 
 def login_session(username, password):
     session = requests.Session()
@@ -117,21 +109,14 @@ def scrape_biometric(session):
                     cols = tr.find_all("td")
                     if len(cols) >= 6 and cols[0].get_text(strip=True).isdigit():
                         roll_no = cols[1].get_text(strip=True)
-                        if not roll_no or roll_no == "-":
-                            continue 
-                            
+                        if not roll_no or roll_no == "-": continue 
                         date = cols[3].get_text(strip=True)
                         in_time = cols[4].get_text(strip=True)
                         out_time = cols[5].get_text(strip=True)
                         status = cols[6].get_text(strip=True) if len(cols) > 6 else "-"
                         
                         if date and date != "-":
-                            bio_data.append({
-                                "date": date,
-                                "in_time": in_time,
-                                "out_time": out_time,
-                                "status": status
-                            })
+                            bio_data.append({"date": date, "in_time": in_time, "out_time": out_time, "status": status})
                 break
         return bio_data
     except SessionExpiredError:
@@ -194,7 +179,6 @@ def scrape_results(session):
         
         if r.status_code == 200 and "SEMESTER" in r.text.upper():
             soup = BeautifulSoup(r.text, "html.parser")
-            
             results_data = []
             current_sem_data = None
             overall_cgpa = "N/A"
@@ -202,60 +186,41 @@ def scrape_results(session):
             rows = soup.find_all('tr')
             for row in rows:
                 text = row.get_text(separator=" ", strip=True).upper()
-                
                 if "SEMESTER" in text and "AVERAGE" not in text and len(text.split()) <= 3:
-                    if current_sem_data:
-                        results_data.append(current_sem_data)
+                    if current_sem_data: results_data.append(current_sem_data)
                     current_sem_data = {"semester": text.strip(), "subjects": [], "sgpa": "N/A", "cgpa": "N/A"}
                     continue
-                    
-                if not current_sem_data:
-                    continue
-                    
+                if not current_sem_data: continue
                 if "SEMESTER GRADE POINT AVERAGE" in text:
                     match = re.search(r'SGPA[^\d]*([\d\.]+)', text)
                     if match: current_sem_data["sgpa"] = match.group(1)
                     continue
-                    
                 if "CUMULATIVE GRADE POINT AVERAGE" in text:
                     match = re.search(r'CGPA[^\d]*([\d\.]+)', text)
                     if match: 
                         current_sem_data["cgpa"] = match.group(1)
                         overall_cgpa = match.group(1) 
                     continue
-                    
                 cols = row.find_all(['td', 'th'])
                 if len(cols) >= 8 and cols[0].get_text(strip=True).isdigit():
                     grade = cols[3].get_text(strip=True)
                     status = cols[5].get_text(strip=True)
                     is_backlog = status == 'F' or grade == 'F' or 'bg-danger' in str(row)
-                    
                     current_sem_data["subjects"].append({
-                        "code": cols[1].get_text(strip=True),
-                        "name": cols[2].get_text(strip=True),
-                        "grade": grade,
-                        "points": cols[4].get_text(strip=True),
-                        "status": status,
-                        "credits": cols[6].get_text(strip=True),
-                        "is_backlog": is_backlog
+                        "code": cols[1].get_text(strip=True), "name": cols[2].get_text(strip=True),
+                        "grade": grade, "points": cols[4].get_text(strip=True),
+                        "status": status, "credits": cols[6].get_text(strip=True), "is_backlog": is_backlog
                     })
-            
-            if current_sem_data:
-                results_data.append(current_sem_data)
-                
+            if current_sem_data: results_data.append(current_sem_data)
             return {"semesters": results_data, "overall_cgpa": overall_cgpa}
-            
-    except SessionExpiredError:
-        raise
-    except Exception as e:
-        print(f"Result Scraping Error: {e}")
+    except SessionExpiredError: raise
+    except Exception as e: pass
     return {"semesters": [], "overall_cgpa": "N/A"}
 
 def scrape_memos(session):
     try:
         r = session.get(BASE + "/home?action=mybox", timeout=15)
         check_auth(r)
-        
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
             memos = []
@@ -267,34 +232,27 @@ def scrape_memos(session):
                     href = None
                     btn = cols[3].find(["a", "button"])
                     if btn:
-                        if btn.name == "a" and btn.get("href") and "javascript" not in btn.get("href").lower():
-                            href = btn["href"]
+                        if btn.name == "a" and btn.get("href") and "javascript" not in btn.get("href").lower(): href = btn["href"]
                         elif btn.get("onclick"):
                             match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", btn["onclick"])
                             if match: href = match.group(1)
-                            
                     if not href:
                         a_tag = cols[3].find("a")
                         if a_tag and a_tag.get("onclick"):
                             match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", a_tag["onclick"])
                             if match: href = match.group(1)
-
                     if href:
                         if href.startswith("/"): href = BASE + href
                         elif not href.startswith("http"): href = BASE + "/" + href
                         memos.append({"name": name, "date": date, "link": href})
             return memos
-    except SessionExpiredError:
-        raise
-    except Exception as e:
-        pass
+    except Exception as e: pass
     return []
 
 def scrape_profile(session, username):
     try:
         r = session.get(BASE + "/home?action=profile", timeout=15)
         check_auth(r)
-        
         soup = BeautifulSoup(r.text, "html.parser")
         profile = {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
         
@@ -312,11 +270,8 @@ def scrape_profile(session, username):
                 heading = panel.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and 'heading' in c.lower())
 
             section_name = heading.get_text(strip=True) if heading else "Other Details"
-            if not section_name or len(section_name) > 40:
-                section_name = "Other Details"
-
-            if section_name not in profile["Sections"]:
-                profile["Sections"][section_name] = {}
+            if not section_name or len(section_name) > 40: section_name = "Other Details"
+            if section_name not in profile["Sections"]: profile["Sections"][section_name] = {}
 
             for tr in table.find_all("tr"):
                 cols = tr.find_all(["th", "td"])
@@ -335,10 +290,8 @@ def scrape_profile(session, username):
                         href = a_tag["href"]
                         if href.startswith("/"): href = BASE + href
                         elif not href.startswith("http"): href = BASE + "/" + href
-                        
                         doc_name = val_elem.get_text(strip=True)
-                        if not doc_name or doc_name.lower() in ["view", "download", "-"]:
-                            doc_name = key
+                        if not doc_name or doc_name.lower() in ["view", "download", "-"]: doc_name = key
                         profile["Documents"][doc_name] = href
                         continue
                         
@@ -349,38 +302,28 @@ def scrape_profile(session, username):
         for strong in soup.find_all(["strong", "b"]):
             key = strong.get_text(strip=True).replace(":", "")
             if not key or len(key) > 40: continue
-            
             parent = strong.parent
-            if parent.name in ["td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "a", "button"]: 
-                continue
-                
+            if parent.name in ["td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "a", "button"]: continue
             text_content = parent.get_text(separator="\n", strip=True)
             val = text_content.replace(strong.get_text(strip=True), "").strip().strip(":\n- ")
-            
             if val and len(val) > 0 and len(val) < 200:
                 panel = parent.find_parent(["div"], class_=lambda c: c and 'panel' in c.lower())
                 section_name = "Contacts"
                 if panel:
                     heading = panel.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and 'heading' in c.lower())
                     if heading: section_name = heading.get_text(strip=True)
-                
-                if section_name not in profile["Sections"]:
-                    profile["Sections"][section_name] = {}
-                    
+                if section_name not in profile["Sections"]: profile["Sections"][section_name] = {}
                 profile["Sections"][section_name][key] = val
 
         empty_keys = [k for k, v in profile["Sections"].items() if not v]
         for k in empty_keys: del profile["Sections"][k]
-
         return profile
-    except SessionExpiredError:
-        raise
+    except SessionExpiredError: raise
     except Exception as e:
         return {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
 
 def rasterize_and_compress_pdf(file_bytes):
-    if not fitz or not Image:
-        raise Exception("PyMuPDF/Pillow missing.")
+    if not fitz or not Image: raise Exception("PyMuPDF/Pillow missing.")
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     images = []
     zoom_matrix = fitz.Matrix(0.5, 0.5)
@@ -402,11 +345,7 @@ def require_token():
 
 @app.route("/check_update", methods=["GET"])
 def check_update():
-    return jsonify({
-        "version": "2.0.0",
-        "build_number": 2, 
-        "download_url": "https://paste-your-google-drive-link-here.com" 
-    })
+    return jsonify({"version": "2.0.0", "build_number": 2, "download_url": "https://paste-your-google-drive-link-here.com"})
 
 @app.route("/login", methods=["POST"])
 def api_login():
@@ -423,67 +362,45 @@ def api_login():
 @app.route("/profile", methods=["GET"])
 def api_profile():
     token = require_token()
-    session = SESSIONS[token]
-    username = TOKENS[token]["username"]
-    return jsonify({"profile": scrape_profile(session, username)})
+    return jsonify({"profile": scrape_profile(SESSIONS[token], TOKENS[token]["username"])})
 
 @app.route("/attendance", methods=["GET"])
 def api_attendance():
     token = require_token()
-    session = SESSIONS[token]
-    return jsonify({
-        "attendance": scrape_attendance(session),
-        "biometric": scrape_biometric(session)
-    })
+    return jsonify({"attendance": scrape_attendance(SESSIONS[token]), "biometric": scrape_biometric(SESSIONS[token])})
 
 @app.route("/results", methods=["GET"])
 def api_results():
     token = require_token()
-    session = SESSIONS[token]
-    results_info = scrape_results(session)
-    results_info["memos"] = scrape_memos(session)
+    results_info = scrape_results(SESSIONS[token])
+    results_info["memos"] = scrape_memos(SESSIONS[token])
     return jsonify({"results": results_info})
 
 @app.route("/marks", methods=["GET"])
 def api_marks():
     token = require_token()
-    session = SESSIONS[token]
-    return jsonify({"midmarks": scrape_midmarks(session)})
+    return jsonify({"midmarks": scrape_midmarks(SESSIONS[token])})
 
 @app.route("/all", methods=["GET"])
 def api_all():
     token = require_token()
     session = SESSIONS[token]
     username = TOKENS[token]["username"]  
-    
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-            future_attendance = executor.submit(scrape_attendance, session)
-            future_biometric = executor.submit(scrape_biometric, session)
-            future_midmarks = executor.submit(scrape_midmarks, session)
-            future_profile = executor.submit(scrape_profile, session, username)
-            future_results = executor.submit(scrape_results, session)
-            future_memos = executor.submit(scrape_memos, session)
-
-            attendance_data = future_attendance.result()
-            biometric_data = future_biometric.result()
-            midmarks_data = future_midmarks.result()
-            profile_data = future_profile.result()
-            results_info = future_results.result()
-            memos_data = future_memos.result()
-
-        results_info["memos"] = memos_data
-        
+            f_att = executor.submit(scrape_attendance, session)
+            f_bio = executor.submit(scrape_biometric, session)
+            f_mid = executor.submit(scrape_midmarks, session)
+            f_pro = executor.submit(scrape_profile, session, username)
+            f_res = executor.submit(scrape_results, session)
+            f_mem = executor.submit(scrape_memos, session)
+        results_info = f_res.result()
+        results_info["memos"] = f_mem.result()
         return jsonify({
-            "ok": True,
-            "attendance": attendance_data,
-            "biometric": biometric_data, 
-            "midmarks": midmarks_data,
-            "profile": profile_data,
-            "results": results_info
+            "ok": True, "attendance": f_att.result(), "biometric": f_bio.result(), 
+            "midmarks": f_mid.result(), "profile": f_pro.result(), "results": results_info
         })
-    except SessionExpiredError:
-        abort(401)
+    except SessionExpiredError: abort(401)
 
 @app.route("/lab_init", methods=["GET"])
 def api_lab_init():
@@ -492,7 +409,6 @@ def api_lab_init():
     try:
         r = session.get(BASE + "/home?action=labrecord_std", timeout=15)
         check_auth(r)
-        
         soup = BeautifulSoup(r.text, "html.parser")
         user_details = {}
         for key in ['ay', 'rollno', 'current_sem', 'lab_batch_no', 'dept_id', 'sec']:
@@ -509,15 +425,10 @@ def api_lab_init():
                 if val and "Select Lab" not in text:
                     if val not in seen_subjects:
                         seen_subjects.add(val)
-                        if " - " in text:
-                             text = text.split(" - ", 1)[1]
+                        if " - " in text: text = text.split(" - ", 1)[1]
                         subjects.append({"value": val, "label": text})
-                    
         return jsonify({"ok": True, "user_details": user_details, "subjects": subjects})
-    except SessionExpiredError:
-        raise
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+    except Exception as e: return jsonify({"ok": False, "error": str(e)})
 
 @app.route("/lab_subject_data", methods=["POST"])
 def api_lab_subject_data():
@@ -529,250 +440,142 @@ def api_lab_subject_data():
     
     ajax_url = BASE + "/pages/student/lab_records/ajax/day2day.php"
     headers = {'x-requested-with': 'XMLHttpRequest'}
-    
     schedule_list = []
     submitted_list = []
     
     try:
         exp_res = session.post(ajax_url, headers=headers, data={'ay': ud.get('ay'), 'sub_code': sub_code, 'action': 'get_exp_list'}, timeout=15)
         check_auth(exp_res)
-        
         if exp_res.status_code == 200:
             soup = BeautifulSoup(exp_res.text, 'html.parser')
             for tr in soup.find_all('tr')[1:]:
                 cols = tr.find_all('td')
                 if len(cols) >= 6:
-                    week = cols[0].get_text(strip=True)
-                    title = cols[3].get_text(strip=True) 
-                    date = cols[5].get_text(strip=True)  
-                    schedule_list.append({"week": week, "title": title, "date": date})
+                    schedule_list.append({"week": cols[0].get_text(strip=True), "title": cols[3].get_text(strip=True), "date": cols[5].get_text(strip=True)})
 
         sub_res = session.post(ajax_url, headers=headers, data={'rollno': ud.get('rollno'), 'ay': ud.get('ay'), 'sub_code': sub_code, 'action': 'day2day_lab'}, timeout=15)
         check_auth(sub_res)
-        
         if sub_res.status_code == 200:
             sub_json = sub_res.json()
             for rec in sub_json.get('data', []):
                 week_no = rec.get('week_no')
-                
                 mark = str(rec.get('mark', '')).strip()
-                is_evaluated = bool(re.search(r'\d', mark))
-                
                 action_str = str(rec.get('action', '')).lower()
                 remarks = str(rec.get('remarks', '')).lower()
-                
-                json_delete_flag = str(rec.get('delete', '0')) == '1'
-                can_delete = json_delete_flag or 'delete' in action_str or 'btn-danger' in action_str
+                can_delete = str(rec.get('delete', '0')) == '1' or 'delete' in action_str or 'btn-danger' in action_str
                 can_reupload = 'reupload' in action_str or 're-upload' in action_str or 'update' in action_str or 'reupload' in remarks
                 
                 if can_delete or can_reupload:
                     status = "Submitted"  
-                    if mark == "0": 
-                        mark = "-"  
-                else:
-                    status = "Evaluated" if mark and mark not in ["-", ""] else "Submitted"
+                    if mark == "0": mark = "-"  
+                else: status = "Evaluated" if mark and mark not in ["-", ""] else "Submitted"
                 
                 roll = ud.get('rollno', '').upper()
                 sem = ud.get('current_sem', '').upper()
                 url = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/LAB/SEM{sem}/{sub_code}/{roll}_week{week_no}.pdf"
-                
-                submitted_list.append({
-                    "week_no": str(week_no),
-                    "week": f"Week-{week_no}",
-                    "title": rec.get('exp_title', f"Experiment {week_no}"),
-                    "marks": mark if mark else "-",
-                    "status": status,
-                    "url": url,
-                    "can_delete": can_delete,
-                    "can_reupload": can_reupload
-                })
+                submitted_list.append({"week_no": str(week_no), "week": f"Week-{week_no}", "title": rec.get('exp_title', f"Experiment {week_no}"), "marks": mark if mark else "-", "status": status, "url": url, "can_delete": can_delete, "can_reupload": can_reupload})
                 
         for sub in submitted_list:
             for sch in schedule_list:
-                if sch['week'].replace(" ", "") == sub['week'].replace(" ", ""):
-                    sub['title'] = sch['title']
-                    
+                if sch['week'].replace(" ", "") == sub['week'].replace(" ", ""): sub['title'] = sch['title']
         return jsonify({"ok": True, "schedule": schedule_list, "submitted": submitted_list})
-    except SessionExpiredError:
-        raise
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+    except Exception as e: return jsonify({"ok": False, "error": str(e)})
 
 @app.route("/lab_upload", methods=["POST"])
 def api_lab_upload():
     token = require_token()
     session = SESSIONS[token]
-    
     ajax_url = BASE + "/pages/student/lab_records/ajax/day2day"
     upload_payload = {'action': (None, 'upload_lab_record_student')}
-    for k, v in request.form.items():
-        upload_payload[k] = (None, v)
-
-    if not request.files or 'prog_doc' not in request.files:
-        return jsonify({"ok": False, "error": "No file uploaded"}), 400
-        
+    for k, v in request.form.items(): upload_payload[k] = (None, v)
+    if not request.files or 'prog_doc' not in request.files: return jsonify({"ok": False, "error": "No file uploaded"}), 400
     f = request.files['prog_doc']
     file_bytes = f.read()
-    file_size = len(file_bytes)
-    
-    if file_size > 1024 * 1024:
-        try:
-            print(f"Auto-compressing {file_size} bytes...")
-            file_bytes = rasterize_and_compress_pdf(file_bytes)
-            file_size = len(file_bytes)
-        except Exception as comp_err:
-            pass
-        
-        if file_size > 1024 * 1024:
-            return jsonify({"ok": False, "error": "PDF too large. Please compress manually."}), 400
-
+    if len(file_bytes) > 1024 * 1024:
+        try: file_bytes = rasterize_and_compress_pdf(file_bytes)
+        except Exception: pass
+        if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large. Please compress manually."}), 400
     rollno = request.form.get('rollno', '').upper()
     week_no = request.form.get('week_no', '')
-    filename = f"{rollno}_week{week_no}.pdf" if rollno and week_no else f.filename
-    
-    stream = io.BytesIO(file_bytes)
-    upload_payload['prog_doc'] = (filename, stream, 'application/pdf')
-
+    upload_payload['prog_doc'] = (f"{rollno}_week{week_no}.pdf" if rollno and week_no else f.filename, io.BytesIO(file_bytes), 'application/pdf')
     try:
         res = session.post(ajax_url, files=upload_payload, timeout=30)
         check_auth(res)
         res_json = res.json()
-        if res_json.get("status") == "success":
-            return jsonify({"ok": True, "message": "Uploaded successfully to Samvidha!"})
+        if res_json.get("status") == "success": return jsonify({"ok": True, "message": "Uploaded successfully to Samvidha!"})
         return jsonify({"ok": False, "error": res_json.get("msg", "Upload failed")})
-    except SessionExpiredError:
-        raise
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+    except Exception as e: return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route("/lab_delete", methods=["POST"])
 def api_lab_delete():
     token = require_token()
     session = SESSIONS[token]
     data = request.get_json() or {}
-    
-    ajax_url = BASE + "/pages/student/lab_records/ajax/day2day"
-    headers = {'x-requested-with': 'XMLHttpRequest'}
-    
-    payload = {
-        'rollno': data.get('rollno'), 'ay': data.get('ay'), 'sub_code': data.get('sub_code'),
-        'week_no': data.get('week_no'), 'sem': data.get('current_sem'), 'action': 'day2day_lab_delete'
-    }
-    
     try:
-        res = session.post(ajax_url, data=payload, headers=headers, timeout=15)
+        res = session.post(BASE + "/pages/student/lab_records/ajax/day2day", data={'rollno': data.get('rollno'), 'ay': data.get('ay'), 'sub_code': data.get('sub_code'), 'week_no': data.get('week_no'), 'sem': data.get('current_sem'), 'action': 'day2day_lab_delete'}, headers={'x-requested-with': 'XMLHttpRequest'}, timeout=15)
         check_auth(res)
-        res_json = res.json()
-        if res_json.get("status") == "success":
-            return jsonify({"ok": True, "message": "Deleted successfully from Samvidha!"})
-        return jsonify({"ok": False, "error": res_json.get("msg", "Delete failed")})
-    except SessionExpiredError:
-        raise
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+        if res.json().get("status") == "success": return jsonify({"ok": True, "message": "Deleted successfully!"})
+        return jsonify({"ok": False, "error": "Delete failed"})
+    except Exception as e: return jsonify({"ok": False, "error": str(e)})
 
 @app.route("/admit_card_init", methods=["GET"])
 def api_admit_card_init():
     token = require_token()
-    session = SESSIONS[token]
     try:
-        r = session.get(BASE + "/home?action=admit_card_std", timeout=15)
+        r = SESSIONS[token].get(BASE + "/home?action=admit_card_std", timeout=15)
         check_auth(r)
         soup = BeautifulSoup(r.text, "html.parser")
         exam_types = []
-        
         selects = soup.find_all("select")
         if len(selects) >= 1:
             for opt in selects[0].find_all("option"):
-                val = opt.get("value", "").strip()
-                txt = opt.get_text(strip=True)
-                if val and "Select" not in txt:
-                    exam_types.append({"value": val, "label": txt})
-                    
+                if opt.get("value", "").strip() and "Select" not in opt.get_text(strip=True):
+                    exam_types.append({"value": opt.get("value", "").strip(), "label": opt.get_text(strip=True)})
         return jsonify({"ok": True, "exam_types": exam_types})
-    except SessionExpiredError:
-        raise
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+    except Exception as e: return jsonify({"ok": False, "error": str(e)})
 
-@app.route("/admit_card_codes", methods=["POST"])
 @app.route("/admit_card_codes", methods=["POST"])
 def api_admit_card_codes():
     token = require_token()
     session = SESSIONS[token]
-    data = request.get_json() or {}
-    exam_type = data.get("exam_type", "")
-    
+    exam_type = (request.get_json() or {}).get("exam_type", "")
     try:
-        # STRICTLY target the background AJAX endpoint. No fallback to main page!
-        ajax_url = BASE + "/pages/student/admit_card/ajax/admit_card.php"
-        headers = {
-            'x-requested-with': 'XMLHttpRequest',
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
-        }
-        
+        # INTELLIGENT BYPASS: Targets the AJAX file perfectly and forces options
+        ajax_urls = [BASE + "/pages/student/admit_card/ajax/admit_card.php", BASE + "/pages/student/admit_card/ajax/admitcard.php"]
+        headers = {'x-requested-with': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'}
         exam_codes = []
-        
-        actions = ["get_examcode", "get_exam_codes", "get_exam_code", "get_examcode_std"]
-        params = ["exam_type", "type", "examType"]
-        
-        for action in actions:
-            for param in params:
-                payload = {"action": action, param: exam_type}
-                r = session.post(ajax_url, data=payload, headers=headers, timeout=5)
-                
-                # Check if it returned options, AND make sure it didn't accidentally return the main page
-                if r.status_code == 200 and "<option" in r.text.lower() and "examination type" not in r.text.lower():
-                    soup = BeautifulSoup(r.text, "html.parser")
-                    for opt in soup.find_all("option"):
-                        val = opt.get("value", "").strip()
-                        txt = opt.get_text(strip=True)
-                        
-                        # Filter out empty values and duplicate Exam Types just in case
-                        if val and "Select" not in txt and txt.upper() not in ["CIE-I", "CIE-II", "SEE", "MAKEUP", "REMEDIAL"]:
-                            exam_codes.append({"value": val, "label": txt})
-                
+        for url in ajax_urls:
+            for action in ["get_examcode", "get_exam_codes", "get_exam_code", "get_examcode_std"]:
+                for param in ["exam_type", "type", "examType"]:
+                    r = session.post(url, data={"action": action, param: exam_type}, headers=headers, timeout=5)
+                    if r.status_code == 200 and "<option" in r.text.lower() and "examination type" not in r.text.lower():
+                        soup = BeautifulSoup(r.text, "html.parser")
+                        for opt in soup.find_all("option"):
+                            val, txt = opt.get("value", "").strip(), opt.get_text(strip=True)
+                            if val and "Select" not in txt and txt.upper() not in ["CIE-I", "CIE-II", "SEE", "MAKEUP", "REMEDIAL"]:
+                                exam_codes.append({"value": val, "label": txt})
+                    if exam_codes: break
                 if exam_codes: break
             if exam_codes: break
-                
         return jsonify({"ok": True, "exam_codes": exam_codes})
-    except SessionExpiredError:
-        raise
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+    except Exception as e: return jsonify({"ok": False, "error": str(e)})
 
 @app.route("/admit_card_fetch", methods=["POST"])
 def api_admit_card_fetch():
     token = require_token()
     session = SESSIONS[token]
     data = request.get_json() or {}
-    exam_type = data.get("exam_type", "")
-    exam_code = data.get("exam_code", "")
-    
     try:
-        headers = {
-            'x-requested-with': 'XMLHttpRequest',
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
-        }
-        
+        headers = {'x-requested-with': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'}
         html_content = ""
         error_msg = "Hall ticket is not available for this selection."
-        
-        urls_to_test = [
-            BASE + "/pages/student/admit_card/ajax/admit_card.php",
-            BASE + "/pages/student/admit_card/ajax/admitcard.php"
-        ]
-        
+        urls_to_test = [BASE + "/pages/student/admit_card/ajax/admit_card.php", BASE + "/pages/student/admit_card/ajax/admitcard.php"]
         actions = ["get_hallticket", "print_hallticket", "get_admit_card", "get_hall_ticket"]
-        
-        # Scrape the raw HTML response
         for url in urls_to_test:
             for action in actions:
                 for type_param in ["exam_type", "type"]:
                     for code_param in ["exam_code", "examCode", "code"]:
-                        payload = {"action": action, type_param: exam_type, code_param: exam_code}
-                        r = session.post(url, data=payload, headers=headers, timeout=5)
-                        
+                        r = session.post(url, data={"action": action, type_param: data.get("exam_type", ""), code_param: data.get("exam_code", "")}, headers=headers, timeout=5)
                         if r.status_code == 200 and len(r.text.strip()) > 50:
                             html_content = r.text
                             break
@@ -780,40 +583,24 @@ def api_admit_card_fetch():
                 if html_content: break
             if html_content: break
 
-        if not html_content:
-            return jsonify({"ok": False, "error": "Could not fetch hall ticket from server."})
-
+        if not html_content: return jsonify({"ok": False, "error": "Could not fetch hall ticket from server."})
         soup = BeautifulSoup(html_content, "html.parser")
-        
-        # Check for red error messages
         err_node = soup.find(string=re.compile(r"Not Yet Ready|Error|Invalid", re.I))
-        if err_node and len(str(err_node).strip()) > 0:
-            return jsonify({"ok": False, "error": str(err_node).strip()})
+        if err_node and len(str(err_node).strip()) > 0: return jsonify({"ok": False, "error": str(err_node).strip()})
 
-        # PARSE HTML TICKET INTO NATIVE JSON
         if "Roll Number" in html_content or "Course Code" in html_content:
             student_info = {}
-            keys = ["Roll Number", "Name of the Candidate", "Year/Section", "Father Name", "Branch"]
             for td in soup.find_all(["td", "th"]):
                 text = td.get_text(strip=True).replace(":", "")
-                if text in keys:
+                if text in ["Roll Number", "Name of the Candidate", "Year/Section", "Father Name", "Branch"]:
                     nxt = td.find_next_sibling("td")
-                    if nxt:
-                        student_info[text] = nxt.get_text(strip=True)
+                    if nxt: student_info[text] = nxt.get_text(strip=True)
 
             exams = []
             for tr in soup.find_all("tr"):
                 cols = tr.find_all("td")
                 if len(cols) >= 5 and cols[0].get_text(strip=True).isdigit():
-                    room = cols[5].get_text(strip=True) if len(cols) > 5 else "TBA"
-                    exams.append({
-                        "sno": cols[0].get_text(strip=True),
-                        "code": cols[1].get_text(strip=True),
-                        "name": cols[2].get_text(strip=True),
-                        "date": cols[3].get_text(strip=True),
-                        "time": cols[4].get_text(strip=True),
-                        "room": room
-                    })
+                    exams.append({"sno": cols[0].get_text(strip=True), "code": cols[1].get_text(strip=True), "name": cols[2].get_text(strip=True), "date": cols[3].get_text(strip=True), "time": cols[4].get_text(strip=True), "room": cols[5].get_text(strip=True) if len(cols) > 5 else "TBA"})
 
             title = ""
             for node in soup.find_all(["td", "div", "span", "b", "strong"]):
@@ -823,21 +610,9 @@ def api_admit_card_fetch():
                     break
 
             if student_info or exams:
-                return jsonify({
-                    "ok": True,
-                    "is_native": True,
-                    "data": {
-                        "title": title,
-                        "student_info": student_info,
-                        "exams": exams
-                    }
-                })
-
+                return jsonify({"ok": True, "is_native": True, "data": {"title": title, "student_info": student_info, "exams": exams}})
         return jsonify({"ok": False, "error": "Hall ticket format not recognized."})
-    except SessionExpiredError:
-        raise
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+    except Exception as e: return jsonify({"ok": False, "error": str(e)})
 
 @app.route("/", methods=["GET"])
 def home(): return jsonify({"status": "API is running"})
