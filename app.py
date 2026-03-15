@@ -217,64 +217,88 @@ def scrape_results(session):
     except Exception as e: pass
     return {"semesters": [], "overall_cgpa": "N/A"}
 
-def scrape_memos(session):
+def scrape_memos(session, username):
     try:
         r = session.get(BASE + "/home?action=mybox", timeout=15)
         check_auth(r)
         memos = []
+        roll = username.upper()
+        
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
             
-            # STRATEGY 1: Deep scan of HTML table rows
-            for tr in soup.find_all("tr"):
-                raw_html = str(tr)
-                
-                # Check if this row belongs to the Memos table by finding keywords
-                if "B. TECH" in raw_html.upper() or "EXAMINATIONS" in raw_html.upper() or "SEMESTER" in raw_html.upper():
-                    name = "Official Document"
-                    date_str = "Available"
-                    href = None
-                    
-                    # Safely extract text nodes to find Name and Date ignoring hidden datatable columns
-                    for txt in tr.stripped_strings:
-                        if "B. TECH" in txt.upper() or "EXAMINATIONS" in txt.upper():
-                            name = txt
-                        # Regex match for Date format DD-MM-YYYY
-                        if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
-                            date_str = txt
-                            
-                    # Aggressively hunt for the View File link in the raw row HTML
-                    match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", raw_html, re.I)
-                    if match:
-                        href = match.group(1)
-                    else:
-                        for a in tr.find_all(["a", "button"], href=True):
-                            h = a["href"]
-                            if "javascript" not in h.lower() and h != "#":
-                                href = h
+            # STRATEGY 1: Parse the HTML table normally
+            for table in soup.find_all("table"):
+                headers_text = table.get_text(separator=" ", strip=True).lower()
+                if "view file" in headers_text or "name" in headers_text or "date" in headers_text:
+                    for tr in table.find_all("tr"):
+                        cols = tr.find_all("td")
+                        if len(cols) < 2: continue
+                        
+                        # Find the index of the Date column to anchor our data extraction safely
+                        date_idx = -1
+                        date_str = ""
+                        for i, col in enumerate(cols):
+                            txt = col.get_text(strip=True)
+                            if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
+                                date_idx = i
+                                date_str = txt
                                 break
                                 
-                    if href:
-                        if href.startswith("/"): href = BASE + href
-                        elif not href.startswith("http"): href = BASE + "/" + href
-                        
-                        # Prevent duplicates
-                        if not any(m['link'] == href for m in memos):
-                            memos.append({"name": name, "date": date_str, "link": href})
+                        name = ""
+                        if date_idx > 0:
+                            name = cols[date_idx - 1].get_text(strip=True)
+                        elif len(cols) >= 2:
+                            name = cols[1].get_text(strip=True)
 
-            # STRATEGY 2: If the table was empty because of Javascript loading (AJAX fallback)
-            if not memos:
-                # Scan entire raw page HTML for things that look like MyBox popup links
-                links = re.findall(r"window\.open\(['\"]([^'\"]+)['\"]", r.text, re.I)
-                for idx, link in enumerate(links):
-                    if "mybox" in link.lower() or "print" in link.lower() or "view" in link.lower() or "pdf" in link.lower():
-                        if link.startswith("/"): link = BASE + link
-                        elif not link.startswith("http"): link = BASE + "/" + link
+                        if not name or "no data" in name.lower(): continue
+
+                        raw_html = str(tr)
+                        href = None
                         
-                        if not any(m['link'] == link for m in memos):
-                            memos.append({"name": f"Official Grade Memo {idx+1}", "date": "Tap to view", "link": link})
+                        # Look specifically for a .pdf filename in the row's raw HTML
+                        pdf_match = re.search(r'[\'"]([a-zA-Z0-9_]+\.pdf)[\'"]', raw_html, re.IGNORECASE)
+                        if pdf_match:
+                            href = pdf_match.group(1)
+                        else:
+                            win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", raw_html, re.IGNORECASE)
+                            if win_match: href = win_match.group(1)
                             
-            return memos
+                        if href:
+                            # Reconstruct the Amazon S3 link perfectly based on your example
+                            if href.endswith(".pdf") and "/" not in href:
+                                href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{href}"
+                            elif href.startswith("/"): 
+                                href = BASE + href
+                            elif not href.startswith("http"): 
+                                href = BASE + "/" + href
+                            
+                            if not any(m['link'] == href for m in memos):
+                                memos.append({"name": name, "date": date_str, "link": href})
+
+            # STRATEGY 2: If the data was loaded via JS array and is missing from the DOM tree
+            if not memos:
+                # Force-extract all PDF filenames attached to this roll number from the raw scripts
+                pdf_files = re.findall(rf'({roll}_[0-9]+\.pdf)', r.text, re.IGNORECASE)
+                
+                # Extract surrounding Context Names & Dates
+                names = re.findall(r'(B\.\s*TECH[^"\'<,\\]+)', r.text, re.IGNORECASE)
+                dates = re.findall(r'\d{2}-\d{2}-\d{4}', r.text)
+                
+                # Remove duplicates while preserving order
+                pdf_files = list(dict.fromkeys(pdf_files)) 
+                names = list(dict.fromkeys(names))
+                dates = list(dict.fromkeys(dates))
+
+                for i, pdf in enumerate(pdf_files):
+                    link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
+                    name = names[i].strip() if i < len(names) else f"Official Memo {i+1}"
+                    date_str = dates[i] if i < len(dates) else "Available"
+                    
+                    if not any(m['link'] == link for m in memos):
+                        memos.append({"name": name, "date": date_str, "link": link})
+                        
+        return memos
     except Exception as e:
         print(f"Memos Error: {e}")
     return []
@@ -403,7 +427,8 @@ def api_attendance():
 def api_results():
     token = require_token()
     results_info = scrape_results(SESSIONS[token])
-    results_info["memos"] = scrape_memos(SESSIONS[token])
+    # Pass username properly to scrape_memos
+    results_info["memos"] = scrape_memos(SESSIONS[token], TOKENS[token]["username"])
     return jsonify({"results": results_info})
 
 @app.route("/marks", methods=["GET"])
@@ -423,7 +448,7 @@ def api_all():
             f_mid = executor.submit(scrape_midmarks, session)
             f_pro = executor.submit(scrape_profile, session, username)
             f_res = executor.submit(scrape_results, session)
-            f_mem = executor.submit(scrape_memos, session)
+            f_mem = executor.submit(scrape_memos, session, username)
             
         results_info = f_res.result()
         results_info["memos"] = f_mem.result()
