@@ -540,23 +540,28 @@ def api_admit_card_codes():
     session = SESSIONS[token]
     exam_type = (request.get_json() or {}).get("exam_type", "")
     try:
-        # INTELLIGENT BYPASS: Targets the AJAX file perfectly and forces options
+        # STRICT TARGETING: Only hits the AJAX file, prevents falling back to the main page which causes duplicates.
         ajax_urls = [BASE + "/pages/student/admit_card/ajax/admit_card.php", BASE + "/pages/student/admit_card/ajax/admitcard.php"]
         headers = {'x-requested-with': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'}
         exam_codes = []
+        
         for url in ajax_urls:
             for action in ["get_examcode", "get_exam_codes", "get_exam_code", "get_examcode_std"]:
                 for param in ["exam_type", "type", "examType"]:
                     r = session.post(url, data={"action": action, param: exam_type}, headers=headers, timeout=5)
+                    
+                    # Ensure we are parsing pure options, not a full HTML page with 'Examination Type' in it
                     if r.status_code == 200 and "<option" in r.text.lower() and "examination type" not in r.text.lower():
                         soup = BeautifulSoup(r.text, "html.parser")
                         for opt in soup.find_all("option"):
                             val, txt = opt.get("value", "").strip(), opt.get_text(strip=True)
+                            # Ignore empty values and strictly ignore Exam Type duplicates
                             if val and "Select" not in txt and txt.upper() not in ["CIE-I", "CIE-II", "SEE", "MAKEUP", "REMEDIAL"]:
                                 exam_codes.append({"value": val, "label": txt})
                     if exam_codes: break
                 if exam_codes: break
             if exam_codes: break
+            
         return jsonify({"ok": True, "exam_codes": exam_codes})
     except Exception as e: return jsonify({"ok": False, "error": str(e)})
 
