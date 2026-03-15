@@ -74,6 +74,15 @@ def scrape_attendance(session):
         
         soup = BeautifulSoup(r.text, "html.parser")
         attendance_data = []
+        last_date = ""
+
+        for td in soup.find_all(["td", "th"]):
+            if "last date of semester" in td.get_text(strip=True).lower():
+                nxt = td.find_next_sibling("td")
+                if nxt:
+                    last_date = nxt.get_text(strip=True)
+                break
+
         for table in soup.find_all("table"):
             if "Course Name" in table.get_text() and "Attendance %" in table.get_text():
                 for tr in table.find_all("tr"):
@@ -88,11 +97,11 @@ def scrape_attendance(session):
                             "Status": cols[-1].get_text(strip=True) 
                         })
                 break
-        return attendance_data
+        return {"records": attendance_data, "last_date": last_date}
     except SessionExpiredError:
         raise
     except Exception:
-        return []
+        return {"records": [], "last_date": ""}
 
 def scrape_biometric(session):
     try:
@@ -394,7 +403,7 @@ def require_token():
 @app.route("/check_update", methods=["GET"])
 def check_update():
     return jsonify({
-        "version": "1.0.1",
+        "version": "2.0.0",
         "build_number": 2, 
         "download_url": "https://paste-your-google-drive-link-here.com" 
     })
@@ -694,7 +703,6 @@ def api_admit_card_codes():
     exam_type = data.get("exam_type", "")
     
     try:
-        ajax_url = BASE + "/pages/student/admit_card/ajax/admit_card.php"
         headers = {
             'x-requested-with': 'XMLHttpRequest',
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
@@ -702,21 +710,33 @@ def api_admit_card_codes():
         
         exam_codes = []
         
-        # BRUTE FORCE TESTER: Tries all known Samvidha payload action names
-        for action in ["get_examcode", "get_exam_codes", "get_exam_code", "get_examcode_std"]:
-            payload = {"action": action, "exam_type": exam_type}
-            r = session.post(ajax_url, data=payload, headers=headers, timeout=15)
-            
-            if r.status_code == 200 and "<option" in r.text:
-                soup = BeautifulSoup(r.text, "html.parser")
-                for opt in soup.find_all("option"):
-                    val = opt.get("value", "").strip()
-                    txt = opt.get_text(strip=True)
-                    if val and "Select" not in txt:
-                        exam_codes.append({"value": val, "label": txt})
-            
-            if exam_codes: 
-                break # Stop searching, we found the right payload!
+        # BRUTE FORCE TESTER: Test all Samvidha action/payload combinations
+        urls_to_test = [
+            BASE + "/pages/student/admit_card/ajax/admit_card.php",
+            BASE + "/pages/student/admit_card/ajax/admitcard.php",
+            BASE + "/home?action=admit_card_std"
+        ]
+        
+        actions = ["get_examcode", "get_exam_codes", "get_exam_code", "get_examcode_std"]
+        params = ["exam_type", "type", "examType"]
+        
+        for url in urls_to_test:
+            for action in actions:
+                for param in params:
+                    payload = {"action": action, param: exam_type}
+                    r = session.post(url, data=payload, headers=headers, timeout=5)
+                    
+                    if r.status_code == 200 and "<option" in r.text.lower():
+                        soup = BeautifulSoup(r.text, "html.parser")
+                        for opt in soup.find_all("option"):
+                            val = opt.get("value", "").strip()
+                            txt = opt.get_text(strip=True)
+                            if val and "Select" not in txt:
+                                exam_codes.append({"value": val, "label": txt})
+                    
+                    if exam_codes: break
+                if exam_codes: break
+            if exam_codes: break
                 
         return jsonify({"ok": True, "exam_codes": exam_codes})
     except SessionExpiredError:
@@ -733,40 +753,90 @@ def api_admit_card_fetch():
     exam_code = data.get("exam_code", "")
     
     try:
-        ajax_url = BASE + "/pages/student/admit_card/ajax/admit_card.php"
         headers = {
             'x-requested-with': 'XMLHttpRequest',
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
         }
         
-        url_link = ""
+        html_content = ""
         error_msg = "Hall ticket is not available for this selection."
         
-        for action in ["get_hallticket", "print_hallticket", "get_admit_card"]:
-            payload = {"action": action, "exam_type": exam_type, "exam_code": exam_code}
-            r = session.post(ajax_url, data=payload, headers=headers, timeout=15)
-            
-            soup = BeautifulSoup(r.text, "html.parser")
-            err_node = soup.find(text=re.compile(r"Not Yet Ready|Error", re.I))
-            if err_node:
-                error_msg = err_node.strip()
-                continue
-                
-            print_btn = soup.find("a", text=re.compile(r"Print", re.I)) or soup.find("button", text=re.compile(r"Print", re.I))
-            if print_btn:
-                href = print_btn.get("href")
-                onclick = print_btn.get("onclick")
-                if href and "javascript" not in href: url_link = href
-                elif onclick:
-                    match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", onclick)
-                    if match: url_link = match.group(1)
+        urls_to_test = [
+            BASE + "/pages/student/admit_card/ajax/admit_card.php",
+            BASE + "/pages/student/admit_card/ajax/admitcard.php"
+        ]
+        
+        actions = ["get_hallticket", "print_hallticket", "get_admit_card", "get_hall_ticket"]
+        
+        # Scrape the raw HTML response
+        for url in urls_to_test:
+            for action in actions:
+                for type_param in ["exam_type", "type"]:
+                    for code_param in ["exam_code", "examCode", "code"]:
+                        payload = {"action": action, type_param: exam_type, code_param: exam_code}
+                        r = session.post(url, data=payload, headers=headers, timeout=5)
+                        
+                        if r.status_code == 200 and len(r.text.strip()) > 50:
+                            html_content = r.text
+                            break
+                    if html_content: break
+                if html_content: break
+            if html_content: break
 
-                if url_link:
-                    if url_link.startswith("/"): url_link = BASE + url_link
-                    elif not url_link.startswith("http"): url_link = BASE + "/" + url_link
-                    return jsonify({"ok": True, "url": url_link})
-                    
-        return jsonify({"ok": False, "error": error_msg})
+        if not html_content:
+            return jsonify({"ok": False, "error": "Could not fetch hall ticket from server."})
+
+        soup = BeautifulSoup(html_content, "html.parser")
+        
+        # Check for red error messages
+        err_node = soup.find(string=re.compile(r"Not Yet Ready|Error|Invalid", re.I))
+        if err_node and len(str(err_node).strip()) > 0:
+            return jsonify({"ok": False, "error": str(err_node).strip()})
+
+        # PARSE HTML TICKET INTO NATIVE JSON
+        if "Roll Number" in html_content or "Course Code" in html_content:
+            student_info = {}
+            keys = ["Roll Number", "Name of the Candidate", "Year/Section", "Father Name", "Branch"]
+            for td in soup.find_all(["td", "th"]):
+                text = td.get_text(strip=True).replace(":", "")
+                if text in keys:
+                    nxt = td.find_next_sibling("td")
+                    if nxt:
+                        student_info[text] = nxt.get_text(strip=True)
+
+            exams = []
+            for tr in soup.find_all("tr"):
+                cols = tr.find_all("td")
+                if len(cols) >= 5 and cols[0].get_text(strip=True).isdigit():
+                    room = cols[5].get_text(strip=True) if len(cols) > 5 else "TBA"
+                    exams.append({
+                        "sno": cols[0].get_text(strip=True),
+                        "code": cols[1].get_text(strip=True),
+                        "name": cols[2].get_text(strip=True),
+                        "date": cols[3].get_text(strip=True),
+                        "time": cols[4].get_text(strip=True),
+                        "room": room
+                    })
+
+            title = ""
+            for node in soup.find_all(["td", "div", "span", "b", "strong"]):
+                txt = node.get_text(strip=True)
+                if "EXAMINATIONS" in txt.upper() and len(txt) < 100:
+                    title = txt
+                    break
+
+            if student_info or exams:
+                return jsonify({
+                    "ok": True,
+                    "is_native": True,
+                    "data": {
+                        "title": title,
+                        "student_info": student_info,
+                        "exams": exams
+                    }
+                })
+
+        return jsonify({"ok": False, "error": "Hall ticket format not recognized."})
     except SessionExpiredError:
         raise
     except Exception as e:
