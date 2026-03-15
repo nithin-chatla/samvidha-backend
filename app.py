@@ -219,29 +219,40 @@ def scrape_results(session):
 
 def scrape_memos(session):
     try:
+        # Navigate to "My Box" to get memos and grade sheets
         r = session.get(BASE + "/home?action=mybox", timeout=15)
         check_auth(r)
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
             memos = []
+            # Looks specifically for table rows in the 'My Box' section
             for tr in soup.find_all("tr"):
                 cols = tr.find_all("td")
+                # Structure: S.No | Name | Date | View File
                 if len(cols) >= 4 and cols[0].get_text(strip=True).isdigit():
                     name = cols[1].get_text(strip=True)
                     date = cols[2].get_text(strip=True)
                     href = None
+                    
+                    # Look for the green eye button link
                     btn = cols[3].find(["a", "button"])
                     if btn:
-                        if btn.name == "a" and btn.get("href") and "javascript" not in btn.get("href").lower(): href = btn["href"]
+                        if btn.name == "a" and btn.get("href") and "javascript" not in btn.get("href").lower(): 
+                            href = btn["href"]
                         elif btn.get("onclick"):
+                            # Sometimes it's a JS window.open pop-up
                             match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", btn["onclick"])
                             if match: href = match.group(1)
+                    
+                    # Fallback finder
                     if not href:
                         a_tag = cols[3].find("a")
                         if a_tag and a_tag.get("onclick"):
                             match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", a_tag["onclick"])
                             if match: href = match.group(1)
+                            
                     if href:
+                        # Fix relative URLs
                         if href.startswith("/"): href = BASE + href
                         elif not href.startswith("http"): href = BASE + "/" + href
                         memos.append({"name": name, "date": date, "link": href})
@@ -373,6 +384,7 @@ def api_attendance():
 def api_results():
     token = require_token()
     results_info = scrape_results(SESSIONS[token])
+    # ADDED: Scraping memos explicitly into the results view!
     results_info["memos"] = scrape_memos(SESSIONS[token])
     return jsonify({"results": results_info})
 
@@ -394,11 +406,18 @@ def api_all():
             f_pro = executor.submit(scrape_profile, session, username)
             f_res = executor.submit(scrape_results, session)
             f_mem = executor.submit(scrape_memos, session)
+            
         results_info = f_res.result()
+        # ADDED: Merging memos data into the final results payload!
         results_info["memos"] = f_mem.result()
+        
         return jsonify({
-            "ok": True, "attendance": f_att.result(), "biometric": f_bio.result(), 
-            "midmarks": f_mid.result(), "profile": f_pro.result(), "results": results_info
+            "ok": True, 
+            "attendance": f_att.result(), 
+            "biometric": f_bio.result(), 
+            "midmarks": f_mid.result(), 
+            "profile": f_pro.result(), 
+            "results": results_info
         })
     except SessionExpiredError: abort(401)
 
@@ -516,107 +535,6 @@ def api_lab_delete():
         check_auth(res)
         if res.json().get("status") == "success": return jsonify({"ok": True, "message": "Deleted successfully!"})
         return jsonify({"ok": False, "error": "Delete failed"})
-    except Exception as e: return jsonify({"ok": False, "error": str(e)})
-
-@app.route("/admit_card_init", methods=["GET"])
-def api_admit_card_init():
-    token = require_token()
-    try:
-        r = SESSIONS[token].get(BASE + "/home?action=admit_card_std", timeout=15)
-        check_auth(r)
-        soup = BeautifulSoup(r.text, "html.parser")
-        exam_types = []
-        selects = soup.find_all("select")
-        if len(selects) >= 1:
-            for opt in selects[0].find_all("option"):
-                if opt.get("value", "").strip() and "Select" not in opt.get_text(strip=True):
-                    exam_types.append({"value": opt.get("value", "").strip(), "label": opt.get_text(strip=True)})
-        return jsonify({"ok": True, "exam_types": exam_types})
-    except Exception as e: return jsonify({"ok": False, "error": str(e)})
-
-@app.route("/admit_card_codes", methods=["POST"])
-def api_admit_card_codes():
-    token = require_token()
-    session = SESSIONS[token]
-    exam_type = (request.get_json() or {}).get("exam_type", "")
-    try:
-        # STRICT TARGETING: Only hits the AJAX file, prevents falling back to the main page which causes duplicates.
-        ajax_urls = [BASE + "/pages/student/admit_card/ajax/admit_card.php", BASE + "/pages/student/admit_card/ajax/admitcard.php"]
-        headers = {'x-requested-with': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'}
-        exam_codes = []
-        
-        for url in ajax_urls:
-            for action in ["get_examcode", "get_exam_codes", "get_exam_code", "get_examcode_std"]:
-                for param in ["exam_type", "type", "examType"]:
-                    r = session.post(url, data={"action": action, param: exam_type}, headers=headers, timeout=5)
-                    
-                    # Ensure we are parsing pure options, not a full HTML page with 'Examination Type' in it
-                    if r.status_code == 200 and "<option" in r.text.lower() and "examination type" not in r.text.lower():
-                        soup = BeautifulSoup(r.text, "html.parser")
-                        for opt in soup.find_all("option"):
-                            val, txt = opt.get("value", "").strip(), opt.get_text(strip=True)
-                            # Ignore empty values and strictly ignore Exam Type duplicates
-                            if val and "Select" not in txt and txt.upper() not in ["CIE-I", "CIE-II", "SEE", "MAKEUP", "REMEDIAL"]:
-                                exam_codes.append({"value": val, "label": txt})
-                    if exam_codes: break
-                if exam_codes: break
-            if exam_codes: break
-            
-        return jsonify({"ok": True, "exam_codes": exam_codes})
-    except Exception as e: return jsonify({"ok": False, "error": str(e)})
-
-@app.route("/admit_card_fetch", methods=["POST"])
-def api_admit_card_fetch():
-    token = require_token()
-    session = SESSIONS[token]
-    data = request.get_json() or {}
-    try:
-        headers = {'x-requested-with': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'}
-        html_content = ""
-        error_msg = "Hall ticket is not available for this selection."
-        urls_to_test = [BASE + "/pages/student/admit_card/ajax/admit_card.php", BASE + "/pages/student/admit_card/ajax/admitcard.php"]
-        actions = ["get_hallticket", "print_hallticket", "get_admit_card", "get_hall_ticket"]
-        for url in urls_to_test:
-            for action in actions:
-                for type_param in ["exam_type", "type"]:
-                    for code_param in ["exam_code", "examCode", "code"]:
-                        r = session.post(url, data={"action": action, type_param: data.get("exam_type", ""), code_param: data.get("exam_code", "")}, headers=headers, timeout=5)
-                        if r.status_code == 200 and len(r.text.strip()) > 50:
-                            html_content = r.text
-                            break
-                    if html_content: break
-                if html_content: break
-            if html_content: break
-
-        if not html_content: return jsonify({"ok": False, "error": "Could not fetch hall ticket from server."})
-        soup = BeautifulSoup(html_content, "html.parser")
-        err_node = soup.find(string=re.compile(r"Not Yet Ready|Error|Invalid", re.I))
-        if err_node and len(str(err_node).strip()) > 0: return jsonify({"ok": False, "error": str(err_node).strip()})
-
-        if "Roll Number" in html_content or "Course Code" in html_content:
-            student_info = {}
-            for td in soup.find_all(["td", "th"]):
-                text = td.get_text(strip=True).replace(":", "")
-                if text in ["Roll Number", "Name of the Candidate", "Year/Section", "Father Name", "Branch"]:
-                    nxt = td.find_next_sibling("td")
-                    if nxt: student_info[text] = nxt.get_text(strip=True)
-
-            exams = []
-            for tr in soup.find_all("tr"):
-                cols = tr.find_all("td")
-                if len(cols) >= 5 and cols[0].get_text(strip=True).isdigit():
-                    exams.append({"sno": cols[0].get_text(strip=True), "code": cols[1].get_text(strip=True), "name": cols[2].get_text(strip=True), "date": cols[3].get_text(strip=True), "time": cols[4].get_text(strip=True), "room": cols[5].get_text(strip=True) if len(cols) > 5 else "TBA"})
-
-            title = ""
-            for node in soup.find_all(["td", "div", "span", "b", "strong"]):
-                txt = node.get_text(strip=True)
-                if "EXAMINATIONS" in txt.upper() and len(txt) < 100:
-                    title = txt
-                    break
-
-            if student_info or exams:
-                return jsonify({"ok": True, "is_native": True, "data": {"title": title, "student_info": student_info, "exams": exams}})
-        return jsonify({"ok": False, "error": "Hall ticket format not recognized."})
     except Exception as e: return jsonify({"ok": False, "error": str(e)})
 
 @app.route("/", methods=["GET"])
