@@ -307,9 +307,9 @@ def scrape_memos(session, username):
                 memos.append({"name": name, "date": date, "link": link})
 
             return memos
-        except Exception as e:
-            print(f"Memos Error: {e}")
-        return []
+    except Exception as e:
+        print(f"Memos Error: {e}")
+    return []
 
 def scrape_profile(session, username):
     try:
