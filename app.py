@@ -227,66 +227,77 @@ def scrape_memos(session, username):
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
             
-            # STRATEGY 1: Extremely strict, clean HTML array extraction
-            for tr in soup.find_all("tr"):
-                cols = tr.find_all(["td", "th"])
-                if not cols: continue
-                
-                # Fetch all non-empty texts in the row as an array
-                texts = [c.get_text(strip=True) for c in cols if c.get_text(strip=True)]
-                date_str = ""
-                name = ""
-                
-                # Find the Date, and strictly take the text block exactly before it as the Name
-                for i, txt in enumerate(texts):
-                    # DD-MM-YYYY or DD/MM/YYYY match
-                    if re.match(r'^\d{2}[-/]\d{2}[-/]\d{2,4}$', txt):
-                        date_str = txt
-                        if i > 0:
-                            name = texts[i-1] 
-                        break
+            # STRATEGY 1: Smart Parsing - Bypasses Datatable Hidden Columns & "CancelPrint" Junk
+            for table in soup.find_all("table"):
+                headers = table.get_text(separator=" ", strip=True).lower()
+                if "date" in headers and ("name" in headers or "view file" in headers):
+                    for tr in table.find_all("tr"):
+                        cols = tr.find_all("td")
+                        if len(cols) < 2: continue
                         
-                if not date_str or not name:
-                    continue
-                    
-                raw_html = str(tr)
-                href = None
-                
-                # Hunt for direct PDF names first based on user's known S3 format
-                pdf_match = re.search(rf'({roll}_\d+\.pdf)', raw_html, re.I)
-                if pdf_match:
-                    href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_match.group(1)}"
-                else:
-                    win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", raw_html, re.IGNORECASE)
-                    if win_match:
-                        h = win_match.group(1)
-                        if h.endswith(".pdf") and "/" not in h:
-                            href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{h}"
-                        elif h.startswith("/"): href = BASE + h
-                        elif not h.startswith("http"): href = BASE + "/" + h
+                        date_str = "Available"
+                        date_idx = -1
                         
-                if href and not any(m['link'] == href for m in memos):
-                    memos.append({"name": name, "date": date_str, "link": href})
+                        # Pinpoint exactly which column holds the Date using Regex
+                        for i, col in enumerate(cols):
+                            txt = col.get_text(strip=True)
+                            if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
+                                date_str = txt
+                                date_idx = i
+                                break
+                        
+                        if date_idx > 0:
+                            # The Memo Title is ALWAYS the column exactly before the date
+                            name_col = cols[date_idx - 1]
+                            
+                            # PURIFY HTML: Destroy hidden "Cancel", "Print", "View" elements before reading text
+                            for tag in name_col.find_all(["button", "a", "span", "div", "i", "script"]):
+                                tag.decompose()
+                                
+                            name = name_col.get_text(separator=" ", strip=True)
+                            # Extra safety text filter
+                            name = re.sub(r'(?i)(cancel|print|view|download)', '', name).strip()
+                            
+                            if not name or "data available" in name.lower() or name.isdigit(): 
+                                continue
+                            
+                            row_html = str(tr)
+                            href = None
+                            
+                            # Extract ANY .pdf format string from the row source code
+                            pdf_match = re.search(r'([a-zA-Z0-9_-]+\.pdf)', row_html, re.I)
+                            if pdf_match:
+                                pdf_filename = pdf_match.group(1)
+                                href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_filename}"
+                            else:
+                                win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", row_html, re.I)
+                                if win_match:
+                                    h = win_match.group(1)
+                                    if h.endswith(".pdf") and "/" not in h:
+                                        href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{h}"
+                                    elif h.startswith("/"): href = BASE + h
+                                    elif not h.startswith("http"): href = BASE + "/" + h
+                                    else: href = h
 
-            # STRATEGY 2: Javascript Fallback (if table was dynamically loaded)
+                            if href and not any(m['link'] == href for m in memos):
+                                memos.append({"name": name, "date": date_str, "link": href})
+
+            # STRATEGY 2: Absolute Brute-Force Extraction (If table is entirely JS rendered)
             if not memos:
-                raw_html = r.text
-                pdf_matches = re.findall(rf'({roll}_\d+\.pdf)', raw_html, re.IGNORECASE)
-                for pdf in pdf_matches:
-                    link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
-                    if any(m['link'] == link for m in memos): continue
-                    
-                    match_idx = raw_html.find(pdf)
-                    start_pos = max(0, match_idx - 600)
-                    context = raw_html[start_pos:match_idx]
-                    
-                    date_match = re.search(r'\d{2}[-/]\d{2}[-/]\d{4}', context)
-                    date_str = date_match.group(0) if date_match else "Available"
-                    
-                    title_match = re.search(r'(B\.\s*TECH[^<"\'\\]+)', context, re.IGNORECASE)
-                    name = title_match.group(1).strip() if title_match else f"Official Grade Memo"
-                        
-                    memos.append({"name": name, "date": date_str, "link": link})
+                pdfs = re.findall(r'([a-zA-Z0-9_-]+\.pdf)', r.text, re.I)
+                pdfs = list(dict.fromkeys([p for p in pdfs if roll.lower() in p.lower()]))
+                
+                names = re.findall(r'(B\.\s*TECH[^"\'<,\\]+)', r.text, re.IGNORECASE)
+                names = list(dict.fromkeys([re.sub(r'(?i)(cancel|print|view|download)', '', n).strip() for n in names]))
+                
+                dates = re.findall(r'\d{2}[-/]\d{2}[-/]\d{4}', r.text)
+                dates = list(dict.fromkeys(dates))
+                
+                for i, pdf in enumerate(pdfs):
+                    href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
+                    name = names[i] if i < len(names) else f"Official Document {i+1}"
+                    date = dates[i] if i < len(dates) else "Available"
+                    memos.append({"name": name, "date": date, "link": href})
                     
         return memos
     except Exception as e:
@@ -390,8 +401,8 @@ def require_token():
 @app.route("/check_update", methods=["GET"])
 def check_update():
     return jsonify({
-        "version": "3.0", 
-        "build_number": 3, 
+        "version": "4.0", 
+        "build_number": 4, 
         "download_url": "https://paste-your-google-drive-link-here.com"
     })
 
