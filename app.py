@@ -225,72 +225,69 @@ def scrape_memos(session, username):
         roll = username.upper()
         
         if r.status_code == 200:
-            raw_html = r.text
-            extracted_links = set()
-            a_html = ""
+            soup = BeautifulSoup(r.text, "html.parser")
             
-            # STRATEGY 1: Aggressive PDF hunt directly in HTML
-            pdf_matches = re.findall(rf'({roll}_\d+\.pdf)', raw_html, re.IGNORECASE)
-            for pdf in pdf_matches:
-                extracted_links.add(f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}")
-            
-            # STRATEGY 2: Hunt for direct S3 links in HTML
-            s3_matches = re.findall(r'(https://iare-data\.s3[^\s"\'<>]+)', raw_html, re.IGNORECASE)
-            for link in s3_matches:
-                if link.endswith('.pdf'): extracted_links.add(link)
-            
-            # STRATEGY 3: Brute-Force the invisible AJAX endpoint if JS rendered
-            if not extracted_links:
-                ajax_urls = re.findall(r'url\s*:\s*[\'"]([^\'"]+\.php)[\'"]', raw_html, re.IGNORECASE)
-                ajax_urls.extend([
-                    "pages/student/mybox/ajax/mybox.php", 
-                    "pages/student/my_box/ajax/mybox.php"
-                ])
+            # STRATEGY 1: Extremely strict, clean HTML array extraction
+            for tr in soup.find_all("tr"):
+                cols = tr.find_all(["td", "th"])
+                if not cols: continue
                 
-                test_urls = set()
-                for url in ajax_urls:
-                    if url.startswith("/"): test_urls.add(BASE + url)
-                    elif not url.startswith("http"): test_urls.add(BASE + "/" + url)
-                    else: test_urls.add(url)
+                # Fetch all non-empty texts in the row as an array
+                texts = [c.get_text(strip=True) for c in cols if c.get_text(strip=True)]
+                date_str = ""
+                name = ""
                 
-                headers = {'x-requested-with': 'XMLHttpRequest'}
-                for url in test_urls:
-                    for action in ['get_mybox', 'get_mybox_data', 'get_data', '']:
-                        try:
-                            payload = {'action': action} if action else {}
-                            ajax_res = session.post(url, data=payload, headers=headers, timeout=5)
-                            if ajax_res.status_code == 200:
-                                a_html = ajax_res.text
-                                pdfs = re.findall(rf'({roll}_\d+\.pdf)', a_html, re.IGNORECASE)
-                                s3s = re.findall(r'(https://iare-data\.s3[^\s"\'<>]+)', a_html, re.IGNORECASE)
-                                
-                                for p in pdfs: 
-                                    extracted_links.add(f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{p}")
-                                for l in s3s: 
-                                    if l.endswith('.pdf'): extracted_links.add(l)
-                                if extracted_links: break
-                        except: pass
-                    if extracted_links: break
+                # Find the Date, and strictly take the text block exactly before it as the Name
+                for i, txt in enumerate(texts):
+                    # DD-MM-YYYY or DD/MM/YYYY match
+                    if re.match(r'^\d{2}[-/]\d{2}[-/]\d{2,4}$', txt):
+                        date_str = txt
+                        if i > 0:
+                            name = texts[i-1] 
+                        break
+                        
+                if not date_str or not name:
+                    continue
+                    
+                raw_html = str(tr)
+                href = None
+                
+                # Hunt for direct PDF names first based on user's known S3 format
+                pdf_match = re.search(rf'({roll}_\d+\.pdf)', raw_html, re.I)
+                if pdf_match:
+                    href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_match.group(1)}"
+                else:
+                    win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", raw_html, re.IGNORECASE)
+                    if win_match:
+                        h = win_match.group(1)
+                        if h.endswith(".pdf") and "/" not in h:
+                            href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{h}"
+                        elif h.startswith("/"): href = BASE + h
+                        elif not h.startswith("http"): href = BASE + "/" + h
+                        
+                if href and not any(m['link'] == href for m in memos):
+                    memos.append({"name": name, "date": date_str, "link": href})
 
-            # Grab Name and Date metadata to pair with the links
-            titles, dates = [], []
-            
-            for content in [raw_html, a_html]:
-                if not content: continue
-                soup = BeautifulSoup(content, "html.parser")
-                for td in soup.find_all(["td", "span", "div"]):
-                    txt = td.get_text(strip=True)
-                    if any(x in txt.upper() for x in ["B. TECH", "EXAMINATION", "MEMO", "REGULAR", "SUPPLEMENTARY"]):
-                        if txt not in titles and len(txt) < 80: titles.append(txt)
-                    if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
-                        if txt not in dates: dates.append(txt)
-
-            # Assemble everything
-            for idx, link in enumerate(extracted_links):
-                name = titles[idx] if idx < len(titles) else f"Official Grade Memo {idx+1}"
-                date = dates[idx] if idx < len(dates) else "Available"
-                memos.append({"name": name, "date": date, "link": link})
-
+            # STRATEGY 2: Javascript Fallback (if table was dynamically loaded)
+            if not memos:
+                raw_html = r.text
+                pdf_matches = re.findall(rf'({roll}_\d+\.pdf)', raw_html, re.IGNORECASE)
+                for pdf in pdf_matches:
+                    link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
+                    if any(m['link'] == link for m in memos): continue
+                    
+                    match_idx = raw_html.find(pdf)
+                    start_pos = max(0, match_idx - 600)
+                    context = raw_html[start_pos:match_idx]
+                    
+                    date_match = re.search(r'\d{2}[-/]\d{2}[-/]\d{4}', context)
+                    date_str = date_match.group(0) if date_match else "Available"
+                    
+                    title_match = re.search(r'(B\.\s*TECH[^<"\'\\]+)', context, re.IGNORECASE)
+                    name = title_match.group(1).strip() if title_match else f"Official Grade Memo"
+                        
+                    memos.append({"name": name, "date": date_str, "link": link})
+                    
         return memos
     except Exception as e:
         print(f"Memos Error: {e}")
