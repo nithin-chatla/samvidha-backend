@@ -225,75 +225,76 @@ def scrape_memos(session, username):
         roll = username.upper()
         
         if r.status_code == 200:
+            raw_html = r.text
+            extracted_links = set()
+            a_html = "" # Fallback AJAX text
             
-            # STRATEGY 1: DEEP REGEX SCAN (Bypasses all invisible HTML/JS issues)
-            # Find the specific PDF format: e.g. 24951A66C7_1764055294.pdf
-            pdf_pattern = re.compile(rf'({roll}_\d+\.pdf)', re.IGNORECASE)
-            pdf_matches = pdf_pattern.finditer(r.text)
+            # STRATEGY 1: Aggressive PDF hunt directly in HTML
+            pdf_matches = re.findall(rf'({roll}_\d+\.pdf)', raw_html, re.IGNORECASE)
+            for pdf in pdf_matches:
+                extracted_links.add(f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}")
             
-            for match in pdf_matches:
-                pdf_filename = match.group(1)
-                link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_filename}"
+            # STRATEGY 2: Hunt for direct S3 links in HTML
+            s3_matches = re.findall(r'(https://iare-data\.s3[^\s"\'<>]+)', raw_html, re.IGNORECASE)
+            for link in s3_matches:
+                if link.endswith('.pdf'): extracted_links.add(link)
+            
+            # STRATEGY 3: Brute-Force the invisible AJAX endpoint
+            if not extracted_links:
+                # Find the API link from the JS script
+                ajax_urls = re.findall(r'url\s*:\s*[\'"]([^\'"]+\.php)[\'"]', raw_html, re.IGNORECASE)
+                ajax_urls.extend([
+                    "pages/student/mybox/ajax/mybox.php", 
+                    "pages/student/my_box/ajax/mybox.php"
+                ])
                 
-                if any(m['link'] == link for m in memos): continue
+                test_urls = set()
+                for url in ajax_urls:
+                    if url.startswith("/"): test_urls.add(BASE + url)
+                    elif not url.startswith("http"): test_urls.add(BASE + "/" + url)
+                    else: test_urls.add(url)
                 
-                # Look backwards 500 characters from the PDF link to find the Date and Title in the code
-                start_pos = max(0, match.start() - 500)
-                context = r.text[start_pos:match.start()]
-                
-                # Extract Date (DD-MM-YYYY)
-                date_match = re.search(r'\d{2}[-/]\d{2}[-/]\d{4}', context)
-                date_str = date_match.group(0) if date_match else "Available"
-                
-                # Extract Title (B. TECH ... EXAMINATIONS)
-                title_match = re.search(r'(B\.\s*TECH[^"\'<,\\]+)', context, re.IGNORECASE)
-                if title_match:
-                    name = title_match.group(1).strip()
-                else:
-                    name = f"Official Grade Memo ({date_str})"
-                    
-                memos.append({"name": name, "date": date_str, "link": link})
-                
-            # STRATEGY 2: HTML Fallback (Just in case the naming convention changes)
-            if not memos:
-                soup = BeautifulSoup(r.text, "html.parser")
-                for table in soup.find_all("table"):
-                    if "view file" in table.get_text(separator=" ", strip=True).lower():
-                        for tr in table.find_all("tr"):
-                            cols = tr.find_all("td")
-                            if len(cols) < 3: continue
-                            
-                            date_idx = -1
-                            date_str = ""
-                            for i, col in enumerate(cols):
-                                txt = col.get_text(strip=True)
-                                if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
-                                    date_idx = i
-                                    date_str = txt
-                                    break
-                                    
-                            if date_idx > 0:
-                                name = cols[date_idx - 1].get_text(strip=True)
-                                href = None
-                                raw_html = str(tr)
+                headers = {'x-requested-with': 'XMLHttpRequest'}
+                for url in test_urls:
+                    # Fire blindly at the endpoint until it drops the payload
+                    for action in ['get_mybox', 'get_mybox_data', 'get_data', '']:
+                        try:
+                            payload = {'action': action} if action else {}
+                            ajax_res = session.post(url, data=payload, headers=headers, timeout=5)
+                            if ajax_res.status_code == 200:
+                                a_html = ajax_res.text
+                                pdfs = re.findall(rf'({roll}_\d+\.pdf)', a_html, re.IGNORECASE)
+                                s3s = re.findall(r'(https://iare-data\.s3[^\s"\'<>]+)', a_html, re.IGNORECASE)
                                 
-                                win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", raw_html, re.IGNORECASE)
-                                if win_match:
-                                    h = win_match.group(1)
-                                    if h.endswith(".pdf") and "/" not in h:
-                                        href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{h}"
-                                    elif h.startswith("/"): href = BASE + h
-                                    elif not h.startswith("http"): href = BASE + "/" + h
-                                        
-                                if href and not any(m['link'] == href for m in memos):
-                                    memos.append({"name": name, "date": date_str, "link": href})
+                                for p in pdfs: 
+                                    extracted_links.add(f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{p}")
+                                for l in s3s: 
+                                    if l.endswith('.pdf'): extracted_links.add(l)
+                                if extracted_links: break
+                        except: pass
+                    if extracted_links: break
+
+            # Grab Name and Date metadata to pair with the links
+            titles, dates = [], []
             
-            # Format long titles cleanly
-            for memo in memos:
-                if len(memo['name']) > 80:
-                    memo['name'] = memo['name'][:77] + "..."
-                    
-            return memos
+            # Search both HTML and AJAX responses for the Text
+            for content in [raw_html, a_html]:
+                if not content: continue
+                soup = BeautifulSoup(content, "html.parser")
+                for td in soup.find_all(["td", "span", "div"]):
+                    txt = td.get_text(strip=True)
+                    if any(x in txt.upper() for x in ["B. TECH", "EXAMINATION", "MEMO", "REGULAR", "SUPPLEMENTARY"]):
+                        if txt not in titles and len(txt) < 80: titles.append(txt)
+                    if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
+                        if txt not in dates: dates.append(txt)
+
+            # Assemble everything
+            for idx, link in enumerate(extracted_links):
+                name = titles[idx] if idx < len(titles) else f"Official Grade Memo {idx+1}"
+                date = dates[idx] if idx < len(dates) else "Available"
+                memos.append({"name": name, "date": date, "link": link})
+
+        return memos
     except Exception as e:
         print(f"Memos Error: {e}")
     return []
@@ -394,11 +395,7 @@ def require_token():
 
 @app.route("/check_update", methods=["GET"])
 def check_update():
-    return jsonify({
-        "version": "3.0", 
-        "build_number": 3, 
-        "download_url": "https://paste-your-google-drive-link-here.com"
-    })
+    return jsonify({"version": "3.0", "build_number": 3, "download_url": "https://paste-your-google-drive-link-here.com"})
 
 @app.route("/login", methods=["POST"])
 def api_login():
