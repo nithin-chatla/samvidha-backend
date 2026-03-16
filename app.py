@@ -225,93 +225,73 @@ def scrape_memos(session, username):
         roll = username.upper()
         
         if r.status_code == 200:
-            # STRATEGY 1: Parse standard HTML tables if they exist
-            soup = BeautifulSoup(r.text, "html.parser")
-            for tr in soup.find_all("tr"):
-                cols = tr.find_all("td")
-                if len(cols) < 3: continue
-                
-                date_idx = -1
-                date_str = ""
-                for i, col in enumerate(cols):
-                    txt = col.get_text(strip=True)
-                    if re.match(r'^\d{2}[-/]\d{2}[-/]\d{2,4}$', txt):
-                        date_idx = i
-                        date_str = txt
-                        break
-                        
-                if date_idx > 0:
-                    name_col = cols[date_idx - 1]
-                    
-                    # Obliterate all hidden elements (buttons/links) before reading text
-                    for junk in name_col.find_all(["button", "a", "script", "style", "span", "i"]):
-                        junk.decompose()
-                    
-                    name = name_col.get_text(separator=" ", strip=True)
-                    # Extra safety: wipe out words that Samvidha uses for its buttons
-                    name = re.sub(r'(?i)(cancel|print|view|download)', '', name).strip(" -:")
-                    
-                    if not name or len(name) < 5 or name.isdigit() or "no data" in name.lower():
-                        continue
-                        
-                    href = None
-                    for a in tr.find_all("a", href=True):
-                        h = a["href"]
-                        if "javascript" not in h.lower() and h != "#":
-                            href = h
-                            break
-                            
-                    if not href:
-                        row_html = str(tr)
-                        match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", row_html, re.I)
-                        if match: href = match.group(1)
-                        else:
-                            match = re.search(r"['\"]([^'\"]+\.pdf)['\"]", row_html, re.I)
-                            if match: href = match.group(1)
-                            
-                    if href:
-                        if href.endswith(".pdf") and "/" not in href:
-                            href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{href}"
-                        elif href.startswith("/"): href = BASE + href
-                        elif not href.startswith("http"): href = BASE + "/" + href
-                        
-                        if not any(m['link'] == href for m in memos):
-                            memos.append({"name": name, "date": date_str, "link": href})
-
-            if memos: return memos
-
-            # STRATEGY 2: Fallback for JS-injected variables or missing HTML tags
             raw_html = r.text
-            pdf_matches = re.findall(rf'({roll}[_a-zA-Z0-9-]*\.pdf)', raw_html, re.IGNORECASE)
-            pdf_matches = list(dict.fromkeys(pdf_matches))
+            extracted_links = set()
+            a_html = ""
             
-            for idx, pdf in enumerate(pdf_matches):
-                link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
+            # STRATEGY 1: Aggressive PDF hunt directly in HTML
+            pdf_matches = re.findall(rf'({roll}_\d+\.pdf)', raw_html, re.IGNORECASE)
+            for pdf in pdf_matches:
+                extracted_links.add(f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}")
+            
+            # STRATEGY 2: Hunt for direct S3 links in HTML
+            s3_matches = re.findall(r'(https://iare-data\.s3[^\s"\'<>]+)', raw_html, re.IGNORECASE)
+            for link in s3_matches:
+                if link.endswith('.pdf'): extracted_links.add(link)
+            
+            # STRATEGY 3: Brute-Force the invisible AJAX endpoint if JS rendered
+            if not extracted_links:
+                ajax_urls = re.findall(r'url\s*:\s*[\'"]([^\'"]+\.php)[\'"]', raw_html, re.IGNORECASE)
+                ajax_urls.extend([
+                    "pages/student/mybox/ajax/mybox.php", 
+                    "pages/student/my_box/ajax/mybox.php"
+                ])
                 
-                # Find position in text to extract adjacent metadata
-                match_pos = raw_html.find(pdf)
-                name = f"Official Grade Memo {idx+1}"
-                date_str = "Available"
+                test_urls = set()
+                for url in ajax_urls:
+                    if url.startswith("/"): test_urls.add(BASE + url)
+                    elif not url.startswith("http"): test_urls.add(BASE + "/" + url)
+                    else: test_urls.add(url)
                 
-                if match_pos != -1:
-                    context = raw_html[max(0, match_pos - 400):match_pos]
-                    
-                    # Safe Date Extraction
-                    d_match = re.search(r'\d{2}[-/]\d{2}[-/]\d{4}', context)
-                    if d_match: date_str = d_match.group(0)
-                    
-                    # Safe Title Extraction - Strictly looking for B. TECH and bounding it
-                    n_match = re.search(r'(B\.\s*TECH[^"\'<,\\]+)', context, re.IGNORECASE)
-                    if n_match:
-                        raw_name = n_match.group(1)
-                        clean_name = re.sub(r'(?i)(cancel|print|view|download|close|btn|class|href|javascript|my box|revaluation|s\.no|exam title)', '', raw_name).strip(' -:>')
-                        clean_name = re.sub(r'\s+', ' ', clean_name).strip()
-                        if clean_name: name = clean_name
-                        
-                if not any(m['link'] == link for m in memos):
-                    memos.append({"name": name, "date": date_str, "link": link})
-                    
-            return memos
+                headers = {'x-requested-with': 'XMLHttpRequest'}
+                for url in test_urls:
+                    for action in ['get_mybox', 'get_mybox_data', 'get_data', '']:
+                        try:
+                            payload = {'action': action} if action else {}
+                            ajax_res = session.post(url, data=payload, headers=headers, timeout=5)
+                            if ajax_res.status_code == 200:
+                                a_html = ajax_res.text
+                                pdfs = re.findall(rf'({roll}_\d+\.pdf)', a_html, re.IGNORECASE)
+                                s3s = re.findall(r'(https://iare-data\.s3[^\s"\'<>]+)', a_html, re.IGNORECASE)
+                                
+                                for p in pdfs: 
+                                    extracted_links.add(f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{p}")
+                                for l in s3s: 
+                                    if l.endswith('.pdf'): extracted_links.add(l)
+                                if extracted_links: break
+                        except: pass
+                    if extracted_links: break
+
+            # Grab Name and Date metadata to pair with the links
+            titles, dates = [], []
+            
+            for content in [raw_html, a_html]:
+                if not content: continue
+                soup = BeautifulSoup(content, "html.parser")
+                for td in soup.find_all(["td", "span", "div"]):
+                    txt = td.get_text(strip=True)
+                    if any(x in txt.upper() for x in ["B. TECH", "EXAMINATION", "MEMO", "REGULAR", "SUPPLEMENTARY"]):
+                        if txt not in titles and len(txt) < 80: titles.append(txt)
+                    if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
+                        if txt not in dates: dates.append(txt)
+
+            # Assemble everything
+            for idx, link in enumerate(extracted_links):
+                name = titles[idx] if idx < len(titles) else f"Official Grade Memo {idx+1}"
+                date = dates[idx] if idx < len(dates) else "Available"
+                memos.append({"name": name, "date": date, "link": link})
+
+        return memos
     except Exception as e:
         print(f"Memos Error: {e}")
     return []
@@ -413,8 +393,8 @@ def require_token():
 @app.route("/check_update", methods=["GET"])
 def check_update():
     return jsonify({
-        "version": "4.0", 
-        "build_number": 4, 
+        "version": "3.0", 
+        "build_number": 3, 
         "download_url": "https://paste-your-google-drive-link-here.com"
     })
 
