@@ -223,118 +223,93 @@ def scrape_memos(session, username):
         check_auth(r)
         memos = []
         roll = username.upper()
-
+        
         if r.status_code == 200:
-            raw_html = r.text
-            
-            def parse_table_for_memos(html, roll_num, memos_list):
-                soup = BeautifulSoup(html, "html.parser")
-                for tr in soup.find_all("tr"):
-                    cols = tr.find_all(["td", "th"])
-                    if len(cols) < 3: continue
+            # STRATEGY 1: Parse standard HTML tables if they exist
+            soup = BeautifulSoup(r.text, "html.parser")
+            for tr in soup.find_all("tr"):
+                cols = tr.find_all("td")
+                if len(cols) < 3: continue
+                
+                date_idx = -1
+                date_str = ""
+                for i, col in enumerate(cols):
+                    txt = col.get_text(strip=True)
+                    if re.match(r'^\d{2}[-/]\d{2}[-/]\d{2,4}$', txt):
+                        date_idx = i
+                        date_str = txt
+                        break
+                        
+                if date_idx > 0:
+                    name_col = cols[date_idx - 1]
                     
-                    # 1. Identify the exact Date column
-                    date_idx = -1
-                    date_str = "Available"
-                    for i, col in enumerate(cols):
-                        txt = col.get_text(strip=True)
-                        if re.match(r'^\d{2}[-/]\d{2}[-/]\d{2,4}$', txt):
-                            date_idx = i
-                            date_str = txt
+                    # Obliterate all hidden elements (buttons/links) before reading text
+                    for junk in name_col.find_all(["button", "a", "script", "style", "span", "i"]):
+                        junk.decompose()
+                    
+                    name = name_col.get_text(separator=" ", strip=True)
+                    # Extra safety: wipe out words that Samvidha uses for its buttons
+                    name = re.sub(r'(?i)(cancel|print|view|download)', '', name).strip(" -:")
+                    
+                    if not name or len(name) < 5 or name.isdigit() or "no data" in name.lower():
+                        continue
+                        
+                    href = None
+                    for a in tr.find_all("a", href=True):
+                        h = a["href"]
+                        if "javascript" not in h.lower() and h != "#":
+                            href = h
                             break
-                    
-                    if date_idx > 0:
-                        # 2. Extract strictly from the column right before the Date
-                        name_col = cols[date_idx - 1]
-                        
-                        # Destroy any hidden button/link texts before reading!
-                        for junk in name_col.find_all(["button", "a", "script", "style", "i", "span"]):
-                            junk.decompose()
-                        
-                        name = name_col.get_text(separator=" ", strip=True)
-                        
-                        # Purify the string to remove panel headers
-                        name = re.sub(r'(?i)(cancel|print|view|download|close|my box|revaluation|exam title|s\.no|entries|search|previous|next|showing)', '', name).strip(' -:>')
-                        name = re.sub(r'\s+', ' ', name).strip()
-                        
-                        if not name or len(name) < 5 or "no data" in name.lower() or name.isdigit():
-                            continue
                             
-                        # 3. Locate the PDF link
+                    if not href:
                         row_html = str(tr)
-                        href = None
-                        
-                        pdf_match = re.search(rf'({roll_num}[a-zA-Z0-9_]*\.pdf)', row_html, re.I)
-                        if pdf_match:
-                            href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll_num}/mybox/{pdf_match.group(1)}"
+                        match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", row_html, re.I)
+                        if match: href = match.group(1)
                         else:
-                            s3_match = re.search(r'(https://iare-data\.s3[^\s"\'<>]+\.pdf)', row_html, re.I)
-                            if s3_match:
-                                href = s3_match.group(1)
-                            else:
-                                win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", row_html, re.I)
-                                if win_match:
-                                    h = win_match.group(1)
-                                    if h.endswith(".pdf") and "/" not in h:
-                                        href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll_num}/mybox/{h}"
-                                    elif h.startswith("/"): href = BASE + h
-                                    elif not h.startswith("http"): href = BASE + "/" + h
-                                    else: href = h
-                        
-                        if href and not any(m['link'] == href for m in memos_list):
-                            memos_list.append({"name": name, "date": date_str, "link": href})
-
-            # STRATEGY 1: Parse from raw HTML
-            parse_table_for_memos(raw_html, roll, memos)
-
-            # STRATEGY 2: If no memos, fetch AJAX and parse
-            if not memos:
-                ajax_urls = re.findall(r'url\s*:\s*[\'"]([^\'"]+\.php)[\'"]', raw_html, re.I)
-                ajax_urls.extend(["pages/student/mybox/ajax/mybox.php", "pages/student/my_box/ajax/mybox.php"])
-                
-                test_urls = []
-                for url in ajax_urls:
-                    clean_url = BASE + url if url.startswith("/") else (url if url.startswith("http") else BASE + "/" + url)
-                    if clean_url not in test_urls: test_urls.append(clean_url)
-
-                headers = {'x-requested-with': 'XMLHttpRequest'}
-                for url in test_urls:
-                    for action in ['get_mybox', 'get_mybox_data', 'get_data', '']:
-                        try:
-                            payload = {'action': action} if action else {}
-                            ajax_res = session.post(url, data=payload, headers=headers, timeout=5)
-                            if ajax_res.status_code == 200:
-                                parse_table_for_memos(ajax_res.text, roll, memos)
-                                if memos: break
-                        except: pass
-                    if memos: break
-
-            # STRATEGY 3: Absolute Brute Force (If strictly no TRs but PDFs exist in raw text)
-            if not memos:
-                combined_html = raw_html
-                pdf_matches = re.findall(rf'({roll}[a-zA-Z0-9_]*\.pdf)', combined_html, re.IGNORECASE)
-                pdf_matches = list(dict.fromkeys(pdf_matches))
-                
-                for idx, pdf in enumerate(pdf_matches):
-                    link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
-                    if any(m['link'] == link for m in memos): continue
-                    
-                    p_idx = combined_html.find(pdf)
-                    name = f"Official Grade Memo {idx+1}"
-                    date = "Available"
-                    
-                    if p_idx != -1:
-                        context = combined_html[max(0, p_idx-600):p_idx]
-                        dates = re.findall(r'\d{2}[-/]\d{2}[-/]\d{2,4}', context)
-                        if dates: date = dates[-1]
-                        
-                        names = re.findall(r'(B\.\s*TECH[^<"\'\\]+)', context, re.I)
-                        if names:
-                            raw_name = names[-1]
-                            clean_name = re.sub(r'(?i)(cancel|print|view|download|close|btn|class|href|javascript|my box|revaluation)', '', raw_name).strip(' -:>')
-                            if clean_name: name = clean_name
+                            match = re.search(r"['\"]([^'\"]+\.pdf)['\"]", row_html, re.I)
+                            if match: href = match.group(1)
                             
-                    memos.append({"name": name, "date": date, "link": link})
+                    if href:
+                        if href.endswith(".pdf") and "/" not in href:
+                            href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{href}"
+                        elif href.startswith("/"): href = BASE + href
+                        elif not href.startswith("http"): href = BASE + "/" + href
+                        
+                        if not any(m['link'] == href for m in memos):
+                            memos.append({"name": name, "date": date_str, "link": href})
+
+            if memos: return memos
+
+            # STRATEGY 2: Fallback for JS-injected variables or missing HTML tags
+            raw_html = r.text
+            pdf_matches = re.findall(rf'({roll}[_a-zA-Z0-9-]*\.pdf)', raw_html, re.IGNORECASE)
+            pdf_matches = list(dict.fromkeys(pdf_matches))
+            
+            for idx, pdf in enumerate(pdf_matches):
+                link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
+                
+                # Find position in text to extract adjacent metadata
+                match_pos = raw_html.find(pdf)
+                name = f"Official Grade Memo {idx+1}"
+                date_str = "Available"
+                
+                if match_pos != -1:
+                    context = raw_html[max(0, match_pos - 400):match_pos]
+                    
+                    # Safe Date Extraction
+                    d_match = re.search(r'\d{2}[-/]\d{2}[-/]\d{4}', context)
+                    if d_match: date_str = d_match.group(0)
+                    
+                    # Safe Title Extraction - Strictly looking for B. TECH and bounding it
+                    n_match = re.search(r'(B\.\s*TECH[^"\'<,\\]+)', context, re.IGNORECASE)
+                    if n_match:
+                        raw_name = n_match.group(1)
+                        clean_name = re.sub(r'(?i)(cancel|print|view|download|close|btn|class|href|javascript|my box|revaluation|s\.no|exam title)', '', raw_name).strip(' -:>')
+                        clean_name = re.sub(r'\s+', ' ', clean_name).strip()
+                        if clean_name: name = clean_name
+                        
+                if not any(m['link'] == link for m in memos):
+                    memos.append({"name": name, "date": date_str, "link": link})
                     
             return memos
     except Exception as e:
