@@ -225,80 +225,75 @@ def scrape_memos(session, username):
         roll = username.upper()
         
         if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
             
-            # STRATEGY 1: Parse the HTML table normally
-            for table in soup.find_all("table"):
-                headers_text = table.get_text(separator=" ", strip=True).lower()
-                if "view file" in headers_text or "name" in headers_text or "date" in headers_text:
-                    for tr in table.find_all("tr"):
-                        cols = tr.find_all("td")
-                        if len(cols) < 2: continue
-                        
-                        # Find the index of the Date column to anchor our data extraction safely
-                        date_idx = -1
-                        date_str = ""
-                        for i, col in enumerate(cols):
-                            txt = col.get_text(strip=True)
-                            if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
-                                date_idx = i
-                                date_str = txt
-                                break
-                                
-                        name = ""
-                        if date_idx > 0:
-                            name = cols[date_idx - 1].get_text(strip=True)
-                        elif len(cols) >= 2:
-                            name = cols[1].get_text(strip=True)
-
-                        if not name or "no data" in name.lower(): continue
-
-                        raw_html = str(tr)
-                        href = None
-                        
-                        # Look specifically for a .pdf filename in the row's raw HTML
-                        pdf_match = re.search(r'[\'"]([a-zA-Z0-9_]+\.pdf)[\'"]', raw_html, re.IGNORECASE)
-                        if pdf_match:
-                            href = pdf_match.group(1)
-                        else:
-                            win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", raw_html, re.IGNORECASE)
-                            if win_match: href = win_match.group(1)
-                            
-                        if href:
-                            # Reconstruct the Amazon S3 link perfectly based on your example
-                            if href.endswith(".pdf") and "/" not in href:
-                                href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{href}"
-                            elif href.startswith("/"): 
-                                href = BASE + href
-                            elif not href.startswith("http"): 
-                                href = BASE + "/" + href
-                            
-                            if not any(m['link'] == href for m in memos):
-                                memos.append({"name": name, "date": date_str, "link": href})
-
-            # STRATEGY 2: If the data was loaded via JS array and is missing from the DOM tree
-            if not memos:
-                # Force-extract all PDF filenames attached to this roll number from the raw scripts
-                pdf_files = re.findall(rf'({roll}_[0-9]+\.pdf)', r.text, re.IGNORECASE)
+            # STRATEGY 1: DEEP REGEX SCAN (Bypasses all invisible HTML/JS issues)
+            # Find the specific PDF format: e.g. 24951A66C7_1764055294.pdf
+            pdf_pattern = re.compile(rf'({roll}_\d+\.pdf)', re.IGNORECASE)
+            pdf_matches = pdf_pattern.finditer(r.text)
+            
+            for match in pdf_matches:
+                pdf_filename = match.group(1)
+                link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_filename}"
                 
-                # Extract surrounding Context Names & Dates
-                names = re.findall(r'(B\.\s*TECH[^"\'<,\\]+)', r.text, re.IGNORECASE)
-                dates = re.findall(r'\d{2}-\d{2}-\d{4}', r.text)
+                if any(m['link'] == link for m in memos): continue
                 
-                # Remove duplicates while preserving order
-                pdf_files = list(dict.fromkeys(pdf_files)) 
-                names = list(dict.fromkeys(names))
-                dates = list(dict.fromkeys(dates))
-
-                for i, pdf in enumerate(pdf_files):
-                    link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
-                    name = names[i].strip() if i < len(names) else f"Official Memo {i+1}"
-                    date_str = dates[i] if i < len(dates) else "Available"
+                # Look backwards 500 characters from the PDF link to find the Date and Title in the code
+                start_pos = max(0, match.start() - 500)
+                context = r.text[start_pos:match.start()]
+                
+                # Extract Date (DD-MM-YYYY)
+                date_match = re.search(r'\d{2}[-/]\d{2}[-/]\d{4}', context)
+                date_str = date_match.group(0) if date_match else "Available"
+                
+                # Extract Title (B. TECH ... EXAMINATIONS)
+                title_match = re.search(r'(B\.\s*TECH[^"\'<,\\]+)', context, re.IGNORECASE)
+                if title_match:
+                    name = title_match.group(1).strip()
+                else:
+                    name = f"Official Grade Memo ({date_str})"
                     
-                    if not any(m['link'] == link for m in memos):
-                        memos.append({"name": name, "date": date_str, "link": link})
-                        
-        return memos
+                memos.append({"name": name, "date": date_str, "link": link})
+                
+            # STRATEGY 2: HTML Fallback (Just in case the naming convention changes)
+            if not memos:
+                soup = BeautifulSoup(r.text, "html.parser")
+                for table in soup.find_all("table"):
+                    if "view file" in table.get_text(separator=" ", strip=True).lower():
+                        for tr in table.find_all("tr"):
+                            cols = tr.find_all("td")
+                            if len(cols) < 3: continue
+                            
+                            date_idx = -1
+                            date_str = ""
+                            for i, col in enumerate(cols):
+                                txt = col.get_text(strip=True)
+                                if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
+                                    date_idx = i
+                                    date_str = txt
+                                    break
+                                    
+                            if date_idx > 0:
+                                name = cols[date_idx - 1].get_text(strip=True)
+                                href = None
+                                raw_html = str(tr)
+                                
+                                win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", raw_html, re.IGNORECASE)
+                                if win_match:
+                                    h = win_match.group(1)
+                                    if h.endswith(".pdf") and "/" not in h:
+                                        href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{h}"
+                                    elif h.startswith("/"): href = BASE + h
+                                    elif not h.startswith("http"): href = BASE + "/" + h
+                                        
+                                if href and not any(m['link'] == href for m in memos):
+                                    memos.append({"name": name, "date": date_str, "link": href})
+            
+            # Format long titles cleanly
+            for memo in memos:
+                if len(memo['name']) > 80:
+                    memo['name'] = memo['name'][:77] + "..."
+                    
+            return memos
     except Exception as e:
         print(f"Memos Error: {e}")
     return []
@@ -399,7 +394,11 @@ def require_token():
 
 @app.route("/check_update", methods=["GET"])
 def check_update():
-    return jsonify({"version": "2.0.0", "build_number": 3, "download_url": "https://drive.google.com/file/d/1EIY7psGPST0F63nOpcu_4vB5Uys70Inc/view?usp=sharing"})
+    return jsonify({
+        "version": "3.0", 
+        "build_number": 3, 
+        "download_url": "https://paste-your-google-drive-link-here.com"
+    })
 
 @app.route("/login", methods=["POST"])
 def api_login():
@@ -427,7 +426,6 @@ def api_attendance():
 def api_results():
     token = require_token()
     results_info = scrape_results(SESSIONS[token])
-    # Pass username properly to scrape_memos
     results_info["memos"] = scrape_memos(SESSIONS[token], TOKENS[token]["username"])
     return jsonify({"results": results_info})
 
