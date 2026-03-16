@@ -227,7 +227,7 @@ def scrape_memos(session, username):
         if r.status_code == 200:
             raw_html = r.text
             extracted_links = set()
-            a_html = "" # Fallback AJAX text
+            a_html = ""
             
             # STRATEGY 1: Aggressive PDF hunt directly in HTML
             pdf_matches = re.findall(rf'({roll}_\d+\.pdf)', raw_html, re.IGNORECASE)
@@ -239,9 +239,8 @@ def scrape_memos(session, username):
             for link in s3_matches:
                 if link.endswith('.pdf'): extracted_links.add(link)
             
-            # STRATEGY 3: Brute-Force the invisible AJAX endpoint
+            # STRATEGY 3: Brute-Force the invisible AJAX endpoint if JS rendered
             if not extracted_links:
-                # Find the API link from the JS script
                 ajax_urls = re.findall(r'url\s*:\s*[\'"]([^\'"]+\.php)[\'"]', raw_html, re.IGNORECASE)
                 ajax_urls.extend([
                     "pages/student/mybox/ajax/mybox.php", 
@@ -256,7 +255,6 @@ def scrape_memos(session, username):
                 
                 headers = {'x-requested-with': 'XMLHttpRequest'}
                 for url in test_urls:
-                    # Fire blindly at the endpoint until it drops the payload
                     for action in ['get_mybox', 'get_mybox_data', 'get_data', '']:
                         try:
                             payload = {'action': action} if action else {}
@@ -277,7 +275,6 @@ def scrape_memos(session, username):
             # Grab Name and Date metadata to pair with the links
             titles, dates = [], []
             
-            # Search both HTML and AJAX responses for the Text
             for content in [raw_html, a_html]:
                 if not content: continue
                 soup = BeautifulSoup(content, "html.parser")
@@ -395,7 +392,11 @@ def require_token():
 
 @app.route("/check_update", methods=["GET"])
 def check_update():
-    return jsonify({"version": "3.0", "build_number": 3, "download_url": "https://paste-your-google-drive-link-here.com"})
+    return jsonify({
+        "version": "3.0", 
+        "build_number": 3, 
+        "download_url": "https://paste-your-google-drive-link-here.com"
+    })
 
 @app.route("/login", methods=["POST"])
 def api_login():
