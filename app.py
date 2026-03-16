@@ -227,73 +227,60 @@ def scrape_memos(session, username):
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
             
-            # STRATEGY 1: Exact mapping based on the jsGrid HTML structure
-            for tr in soup.find_all("tr", class_=["jsgrid-row", "jsgrid-alt-row"]):
-                cols = tr.find_all("td", class_="jsgrid-cell")
-                # Structure: [0: S.No], [1: Name], [2: Date], [3: Action Link]
-                if len(cols) >= 4:
-                    name = cols[1].get_text(separator=" ", strip=True)
-                    date_str = cols[2].get_text(strip=True)
+            for tr in soup.find_all("tr"):
+                cols = tr.find_all("td")
+                if len(cols) < 3: continue
+                
+                date_idx = -1
+                date_str = ""
+                for i, col in enumerate(cols):
+                    txt = col.get_text(strip=True)
+                    if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
+                        date_idx = i
+                        date_str = txt
+                        break
+                        
+                if date_idx > 0:
+                    raw_name = cols[date_idx - 1].get_text(strip=True)
                     
-                    # Clean the name of any hidden button texts
-                    name = re.sub(r'(?i)(cancel|print|view|download)', '', name).strip(" -:")
-                    if not name: name = "Official Grade Memo"
+                    # Clean the name of those hidden buttons!
+                    name = raw_name.replace("Cancel", "").replace("Print", "").replace("View", "").replace("Download", "").strip()
                     
-                    # Extract the PDF link
-                    a_tag = cols[3].find("a", href=True)
                     href = None
                     
-                    if a_tag:
-                        href = a_tag["href"]
-                    else:
-                        # Deep scan the action column HTML if missing <a> tag
-                        action_html = str(cols[3])
-                        pdf_match = re.search(rf'({roll}_\d+\.pdf)', action_html, re.I)
-                        if pdf_match:
-                            href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_match.group(1)}"
+                    for element in tr.find_all(["a", "button"]):
+                        if element.get("onclick"):
+                            match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", element["onclick"])
+                            if match:
+                                href = match.group(1)
+                                break
+                        elif element.name == "a" and element.get("href"):
+                            h = element["href"]
+                            if "javascript" not in h.lower() and h != "#":
+                                href = h
+                                break
+                                
+                    if not href:
+                        raw_html = str(tr)
+                        match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", raw_html, re.I)
+                        if match:
+                            href = match.group(1)
                         else:
-                            win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", action_html, re.IGNORECASE)
-                            if win_match:
-                                href = win_match.group(1)
-
+                            match = re.search(r"['\"]([^'\"]+\.pdf)['\"]", raw_html, re.I)
+                            if match:
+                                href = match.group(1)
+                            
                     if href:
-                        if href.startswith("/"): href = BASE + href
+                        # Construct the Amazon S3 link dynamically using your roll number
+                        if href.endswith(".pdf") and "/" not in href:
+                            href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{href}"
+                        elif href.startswith("/"): href = BASE + href
                         elif not href.startswith("http"): href = BASE + "/" + href
                         
                         if not any(m['link'] == href for m in memos):
                             memos.append({"name": name, "date": date_str, "link": href})
-                            
-            if memos: return memos
 
-            # STRATEGY 2: Fallback to aggressive Regex if DOM is completely empty (JS rendered entirely)
-            raw_html = r.text
-            pdf_matches = re.findall(rf'({roll}_\d+\.pdf)', raw_html, re.IGNORECASE)
-            pdf_matches = list(dict.fromkeys(pdf_matches))
-            
-            for idx, pdf in enumerate(pdf_matches):
-                link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
-                
-                if any(m['link'] == link for m in memos): continue
-                
-                match_pos = raw_html.find(pdf)
-                name = f"Official Grade Memo {idx+1}"
-                date_str = "Available"
-                
-                if match_pos != -1:
-                    # Scan backwards to locate the surrounding context (Date & B.TECH Title)
-                    context = raw_html[max(0, match_pos - 400):match_pos]
-                    
-                    date_match = re.search(r'\d{2}[-/]\d{2}[-/]\d{4}', context)
-                    if date_match: date_str = date_match.group(0)
-                    
-                    title_match = re.search(r'(B\.\s*TECH[^"\'<,\\]+)', context, re.IGNORECASE)
-                    if title_match:
-                        raw_name = title_match.group(1).strip()
-                        name = re.sub(r'(?i)(cancel|print|view|download)', '', raw_name).strip(" -:")
-                        
-                memos.append({"name": name, "date": date_str, "link": link})
-                            
-        return memos
+            return memos
     except Exception as e:
         print(f"Memos Error: {e}")
     return []
