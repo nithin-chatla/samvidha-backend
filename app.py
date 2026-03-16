@@ -227,7 +227,26 @@ def scrape_memos(session, username):
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
             
-            # STRATEGY 1: Smart Parsing - Bypasses Datatable Hidden Columns & "CancelPrint" Junk
+            # STRATEGY 1: Exact mapping based on provided 'jsgrid' screenshot
+            # The uploaded HTML shows rows use the exact classes 'jsgrid-row' and 'jsgrid-alt-row'
+            for tr in soup.find_all("tr", class_=["jsgrid-row", "jsgrid-alt-row"]):
+                cols = tr.find_all("td")
+                if len(cols) >= 4:
+                    name = cols[1].get_text(strip=True)
+                    date = cols[2].get_text(strip=True)
+                    a_tag = cols[3].find("a", href=True)
+                    
+                    if a_tag:
+                        href = a_tag["href"]
+                        if href.startswith("/"): href = BASE + href
+                        elif not href.startswith("http"): href = BASE + "/" + href
+                        
+                        if not any(m['link'] == href for m in memos):
+                            memos.append({"name": name, "date": date, "link": href})
+                            
+            if memos: return memos # Success!
+            
+            # STRATEGY 2: Smart Generic Table Parsing (Fallback if jsgrid classes are missing)
             for table in soup.find_all("table"):
                 headers = table.get_text(separator=" ", strip=True).lower()
                 if "date" in headers and ("name" in headers or "view file" in headers):
@@ -235,19 +254,17 @@ def scrape_memos(session, username):
                         cols = tr.find_all("td")
                         if len(cols) < 2: continue
                         
-                        date_str = "Available"
-                        date_idx = -1
+                        date_str, date_idx = "Available", -1
                         
-                        # Pinpoint exactly which column holds the Date using Regex
+                        # Find the precise date column
                         for i, col in enumerate(cols):
                             txt = col.get_text(strip=True)
-                            if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
-                                date_str = txt
-                                date_idx = i
+                            if re.match(r'^\d{2}[-/]\d{2}[-/]\d{2,4}$', txt):
+                                date_str, date_idx = txt, i
                                 break
                         
                         if date_idx > 0:
-                            # The Memo Title is ALWAYS the column exactly before the date
+                            # The memo name is ALWAYS exactly one cell to the left of the date
                             name_col = cols[date_idx - 1]
                             
                             # PURIFY HTML: Destroy hidden "Cancel", "Print", "View" elements before reading text
@@ -255,7 +272,6 @@ def scrape_memos(session, username):
                                 tag.decompose()
                                 
                             name = name_col.get_text(separator=" ", strip=True)
-                            # Extra safety text filter
                             name = re.sub(r'(?i)(cancel|print|view|download)', '', name).strip()
                             
                             if not name or "data available" in name.lower() or name.isdigit(): 
@@ -264,28 +280,34 @@ def scrape_memos(session, username):
                             row_html = str(tr)
                             href = None
                             
-                            # Extract ANY .pdf format string from the row source code
-                            pdf_match = re.search(r'([a-zA-Z0-9_-]+\.pdf)', row_html, re.I)
-                            if pdf_match:
-                                pdf_filename = pdf_match.group(1)
-                                href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_filename}"
-                            else:
-                                win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", row_html, re.I)
-                                if win_match:
-                                    h = win_match.group(1)
-                                    if h.endswith(".pdf") and "/" not in h:
-                                        href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{h}"
-                                    elif h.startswith("/"): href = BASE + h
-                                    elif not h.startswith("http"): href = BASE + "/" + h
-                                    else: href = h
+                            # Extract ANY .pdf link from this row
+                            for a in tr.find_all("a", href=True):
+                                if "javascript" not in a["href"].lower() and a["href"] != "#":
+                                    href = a["href"]
+                                    break
+                                    
+                            if not href:
+                                pdf_match = re.search(rf'({roll}_\d+\.pdf)', row_html, re.I)
+                                if pdf_match:
+                                    pdf_filename = pdf_match.group(1)
+                                    href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_filename}"
+                                else:
+                                    win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", row_html, re.IGNORECASE)
+                                    if win_match:
+                                        h = win_match.group(1)
+                                        if h.endswith(".pdf") and "/" not in h:
+                                            href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{h}"
 
-                            if href and not any(m['link'] == href for m in memos):
-                                memos.append({"name": name, "date": date_str, "link": href})
+                            if href:
+                                if href.startswith("/"): href = BASE + href
+                                elif not href.startswith("http"): href = BASE + "/" + href
+                                if not any(m['link'] == href for m in memos):
+                                    memos.append({"name": name, "date": date_str, "link": href})
 
-            # STRATEGY 2: Absolute Brute-Force Extraction (If table is entirely JS rendered)
+            # STRATEGY 3: Absolute Brute-Force Array Extraction (If purely JS rendered)
             if not memos:
-                pdfs = re.findall(r'([a-zA-Z0-9_-]+\.pdf)', r.text, re.I)
-                pdfs = list(dict.fromkeys([p for p in pdfs if roll.lower() in p.lower()]))
+                pdfs = re.findall(rf'({roll}_\d+\.pdf)', r.text, re.I)
+                pdfs = list(dict.fromkeys(pdfs))
                 
                 names = re.findall(r'(B\.\s*TECH[^"\'<,\\]+)', r.text, re.IGNORECASE)
                 names = list(dict.fromkeys([re.sub(r'(?i)(cancel|print|view|download)', '', n).strip() for n in names]))
@@ -294,10 +316,10 @@ def scrape_memos(session, username):
                 dates = list(dict.fromkeys(dates))
                 
                 for i, pdf in enumerate(pdfs):
-                    href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
-                    name = names[i] if i < len(names) else f"Official Document {i+1}"
+                    link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
+                    name = names[i] if i < len(names) else f"Official Grade Memo {i+1}"
                     date = dates[i] if i < len(dates) else "Available"
-                    memos.append({"name": name, "date": date, "link": href})
+                    memos.append({"name": name, "date": date, "link": link})
                     
         return memos
     except Exception as e:
