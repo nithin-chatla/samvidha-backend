@@ -412,46 +412,77 @@ def scrape_timetable(session, ay=None, section=None):
         soup = BeautifulSoup(r.text, "html.parser")
         
         ays, sections = [], []
-        # Find AY dropdown options
+        ay_input_name = "ay"
+        sec_input_name = "sec"
+        
+        # Scrape Dropdowns dynamically to ensure we get exactly what the form expects
         sel_ay = soup.find('select', id=re.compile(r'ay', re.I)) or soup.find('select', {'name': re.compile(r'ay', re.I)})
         if sel_ay:
+            ay_input_name = sel_ay.get('name', 'ay')
             ays = [{'value': o.get('value', ''), 'label': o.get_text(strip=True)} for o in sel_ay.find_all('option') if o.get('value')]
             
-        # Find Section dropdown options
         sel_sec = soup.find('select', id=re.compile(r'sec', re.I)) or soup.find('select', {'name': re.compile(r'sec', re.I)})
         if sel_sec:
+            sec_input_name = sel_sec.get('name', 'sec')
             sections = [{'value': o.get('value', ''), 'label': o.get_text(strip=True)} for o in sel_sec.find_all('option') if o.get('value')]
 
         schedule, subjects = [], []
         html_to_parse = r.text
         
-        # If the user specifically selects an AY and Section, POST to retrieve table data
         if ay and section:
-            ajax_urls = [
-                BASE + "/pages/student/timetable/ajax/timetable.php",
-                BASE + "/pages/student/time_table/ajax/timetable.php",
-                BASE + "/pages/student/time_table/ajax/day2day.php",
-                BASE + "/pages/student/tt/ajax/tt.php",
-                BASE + "/pages/student/tt/ajax/timetable.php"
-            ]
-            headers = {'x-requested-with': 'XMLHttpRequest'}
-            for url in ajax_urls:
-                for action in ['get_timetable', 'get_tt', 'show_tt', 'get_data', 'get_timetable_data']:
-                    try:
-                        payload = {'action': action, 'ay': ay, 'section': section, 'sec': section}
-                        res = session.post(url, data=payload, headers=headers, timeout=5)
-                        if res.status_code == 200 and ("Period" in res.text or "Staff" in res.text):
-                            html_to_parse = res.text
-                            break
-                    except: pass
-                if "Period" in html_to_parse: break
+            try:
+                # 1. Standard POST request dynamically populated from hidden inputs and submit buttons
+                form_data = {
+                    ay_input_name: ay,
+                    sec_input_name: section,
+                    'action': 'TT_std',
+                    'submit': 'show',
+                    'show': 'show',
+                    'btnShow': 'show'
+                }
                 
+                form = soup.find('form')
+                if form:
+                    for inp in form.find_all('input', type='hidden'):
+                        if inp.get('name'):
+                            form_data[inp.get('name')] = inp.get('value', '')
+                            
+                    submit_btn = form.find('button', type='submit') or form.find('input', type='submit')
+                    if submit_btn and submit_btn.get('name'):
+                        form_data[submit_btn.get('name')] = submit_btn.get('value', '') or 'show'
+
+                res = session.post(BASE + "/home?action=TT_std", data=form_data, timeout=10)
+                if res.status_code == 200 and "Period" in res.text:
+                    html_to_parse = res.text
+            except: pass
+            
+            # 2. AJAX Fallback (if standard form POST failed to yield "Period" markers)
+            if "Period" not in html_to_parse:
+                ajax_urls = [
+                    BASE + "/pages/student/timetable/ajax/timetable.php",
+                    BASE + "/pages/student/time_table/ajax/timetable.php",
+                    BASE + "/pages/student/time_table/ajax/day2day.php",
+                    BASE + "/pages/student/tt/ajax/tt.php",
+                    BASE + "/pages/student/tt/ajax/timetable.php"
+                ]
+                headers = {'x-requested-with': 'XMLHttpRequest'}
+                for url in ajax_urls:
+                    for action in ['get_timetable', 'get_tt', 'show_tt', 'get_data', 'get_timetable_data']:
+                        try:
+                            payload = {'action': action, 'ay': ay, 'section': section, 'sec': section, ay_input_name: ay, sec_input_name: section}
+                            res = session.post(url, data=payload, headers=headers, timeout=5)
+                            if res.status_code == 200 and ("Period" in res.text or "Staff" in res.text):
+                                html_to_parse = res.text
+                                break
+                        except: pass
+                    if "Period" in html_to_parse: break
+
         data_soup = BeautifulSoup(html_to_parse, "html.parser")
         
         # Scan the results for the timetable grid and the legend mapping table
         for table in data_soup.find_all("table"):
             header_text = table.get_text(separator=" ", strip=True).lower()
-            if "period - i" in header_text:
+            if "period - i" in header_text or "period" in header_text:
                 for tr in table.find_all("tr"):
                     cols = tr.find_all(["th", "td"])
                     if not cols: continue
@@ -462,7 +493,8 @@ def scrape_timetable(session, ay=None, section=None):
                         for col in cols[1:]:
                             p_text = col.get_text(separator="\n", strip=True)
                             periods.append(p_text if p_text else "-")
-                        schedule.append({"day": day_text, "periods": periods})
+                        if periods:
+                            schedule.append({"day": day_text, "periods": periods})
             elif "staff name" in header_text and "subject code" in header_text:
                 for tr in table.find_all("tr"):
                     cols = tr.find_all("td")
