@@ -479,7 +479,7 @@ def scrape_timetable(session, ay=None, section=None):
 
         data_soup = BeautifulSoup(html_to_parse, "html.parser")
         
-        # Scan the results for the timetable grid and the legend mapping table
+        # CRITICAL FIX: Parse timetable cells into dictionary instead of flat string!
         for table in data_soup.find_all("table"):
             header_text = table.get_text(separator=" ", strip=True).lower()
             if "period - i" in header_text or "period" in header_text:
@@ -487,14 +487,45 @@ def scrape_timetable(session, ay=None, section=None):
                     cols = tr.find_all(["th", "td"])
                     if not cols: continue
                     day_text = cols[0].get_text(separator=" ", strip=True)
+                    
                     if any(d in day_text.lower() for d in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]):
                         periods = []
                         # Loop through remaining columns representing Periods I through VI+
                         for col in cols[1:]:
                             p_text = col.get_text(separator="\n", strip=True)
-                            periods.append(p_text if p_text else "-")
+                            
+                            # If cell is empty or "-", mark it as a free period
+                            if not p_text or p_text == "-":
+                                periods.append({
+                                    "isFree": True,
+                                    "subject": "-",
+                                    "room": "",
+                                    "faculty": ""
+                                })
+                            else:
+                                # Split the text into lines mathematically
+                                lines = [line.strip() for line in p_text.split('\n') if line.strip()]
+                                subject = lines[0] if len(lines) > 0 else "-"
+                                room = ""
+                                faculty = ""
+                                
+                                # Process the remaining lines looking for Room and Faculty markers
+                                for line in lines[1:]:
+                                    if "Room" in line:
+                                        room = line.replace("Room", "").replace(":", "").strip()
+                                    elif "Faculty" in line or "Staff" in line:
+                                        faculty = line.replace("Faculty Id", "").replace("Faculty", "").replace(":", "").strip()
+                                        
+                                periods.append({
+                                    "isFree": False,
+                                    "subject": subject,
+                                    "room": room,
+                                    "faculty": faculty
+                                })
+
                         if periods:
                             schedule.append({"day": day_text, "periods": periods})
+                            
             elif "staff name" in header_text and "subject code" in header_text:
                 for tr in table.find_all("tr"):
                     cols = tr.find_all("td")
