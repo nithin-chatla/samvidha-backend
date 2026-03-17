@@ -241,16 +241,12 @@ def scrape_memos(session, username):
                         break
                         
                 if date_idx > 0:
-                    name_cell = cols[date_idx - 1]
+                    # FETCH TEXT WITH SPACES to prevent words merging like "ResultsCancelPrint"
+                    raw_name = cols[date_idx - 1].get_text(separator=" ", strip=True)
                     
-                    # Remove hidden buttons/links inside the name cell before getting text
-                    for junk in name_cell.find_all(["button", "a", "i", "span"]):
-                        junk.decompose()
-                        
-                    raw_name = name_cell.get_text(separator=" ", strip=True)
-                    
-                    # Clean the name of those hidden buttons!
-                    name = re.sub(r'(?i)(cancel|print|view|download|file|close)', '', raw_name)
+                    # Safely remove button texts using regex without touching the real memo title
+                    name = re.sub(r'(?i)\b(cancel|print|view file|view|download|file|close)\b', '', raw_name)
+                    # Clean up any leftover awkward spacing
                     name = re.sub(r'\s+', ' ', name).strip(' -:>')
                     
                     if not name or len(name) < 5 or name.isdigit() or "no data" in name.lower():
