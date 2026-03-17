@@ -254,8 +254,6 @@ def scrape_memos(session, username):
                 soup = BeautifulSoup(content, "html.parser")
                 
                 for tr in soup.find_all("tr"):
-                    # CRITICAL FIX: Skip any outer wrapper rows that contain nested tables!
-                    # This prevents the loop from gobbling up the entire page text into one name.
                     if tr.find("table"): continue
                     
                     row_html = str(tr)
@@ -279,7 +277,6 @@ def scrape_memos(session, username):
                     if not href or any(m['link'] == href for m in memos):
                         continue
                         
-                    # Destroy ALL buttons, links, and icons in this row before reading text!
                     for junk in tr.find_all(["button", "a", "script", "style", "i", "span"]):
                         junk.decompose()
                         
@@ -300,7 +297,7 @@ def scrape_memos(session, username):
                                 
                     memos.append({"name": name, "date": date, "link": href})
 
-            # 3. Ultimate Envelope Scanner Fallback (For purely Javascript-rendered or JSON APIs)
+            # 3. Ultimate Envelope Scanner Fallback
             if not memos:
                 combined = raw_html + a_html
                 pdfs = re.findall(rf'({roll}_\d+\.pdf)', combined, re.IGNORECASE)
@@ -315,18 +312,15 @@ def scrape_memos(session, username):
                     date = "Available"
                     
                     if match_pos != -1:
-                        # CRITICAL FIX: The "Envelope Scanner". 
-                        # Isolate a chunk of text ONLY BEFORE the PDF to PREVENT stealing adjacent names!
                         context = combined[max(0, match_pos - 600) : match_pos]
                         
                         d_matches = re.findall(r'\d{2}[-/]\d{2}[-/]\d{4}', context)
                         if d_matches: 
-                            date = d_matches[-1] # Take the date closest to the PDF
+                            date = d_matches[-1] 
                             
-                        # Look for either 'B. TECH' or 'EXAMINATION' strictly without jumping past quote marks
                         n_matches = re.findall(r'((?:B\.\s*TECH|EXAMINATION)[^"\'<,\\]+)', context, re.IGNORECASE)
                         if n_matches:
-                            best_name = n_matches[-1] # Take the name closest to the PDF
+                            best_name = n_matches[-1] 
                             clean_name = re.sub(r'(?i)(cancel|print|view|download|close|btn|class|href|javascript|my box|revaluation|s\.no|exam title)', '', best_name).strip(' -:>')
                             clean_name = re.sub(r'\s+', ' ', clean_name).strip()
                             if clean_name: name = clean_name
@@ -411,6 +405,79 @@ def scrape_profile(session, username):
     except Exception as e:
         return {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
 
+def scrape_timetable(session, ay=None, section=None):
+    try:
+        r = session.get(BASE + "/home?action=TT_std", timeout=15)
+        check_auth(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        
+        ays, sections = [], []
+        # Find AY dropdown options
+        sel_ay = soup.find('select', id=re.compile(r'ay', re.I)) or soup.find('select', {'name': re.compile(r'ay', re.I)})
+        if sel_ay:
+            ays = [{'value': o.get('value', ''), 'label': o.get_text(strip=True)} for o in sel_ay.find_all('option') if o.get('value')]
+            
+        # Find Section dropdown options
+        sel_sec = soup.find('select', id=re.compile(r'sec', re.I)) or soup.find('select', {'name': re.compile(r'sec', re.I)})
+        if sel_sec:
+            sections = [{'value': o.get('value', ''), 'label': o.get_text(strip=True)} for o in sel_sec.find_all('option') if o.get('value')]
+
+        schedule, subjects = [], []
+        html_to_parse = r.text
+        
+        # If the user specifically selects an AY and Section, POST to retrieve table data
+        if ay and section:
+            ajax_urls = [
+                BASE + "/pages/student/timetable/ajax/timetable.php",
+                BASE + "/pages/student/time_table/ajax/timetable.php",
+                BASE + "/pages/student/time_table/ajax/day2day.php",
+                BASE + "/pages/student/tt/ajax/tt.php",
+                BASE + "/pages/student/tt/ajax/timetable.php"
+            ]
+            headers = {'x-requested-with': 'XMLHttpRequest'}
+            for url in ajax_urls:
+                for action in ['get_timetable', 'get_tt', 'show_tt', 'get_data', 'get_timetable_data']:
+                    try:
+                        payload = {'action': action, 'ay': ay, 'section': section, 'sec': section}
+                        res = session.post(url, data=payload, headers=headers, timeout=5)
+                        if res.status_code == 200 and ("Period" in res.text or "Staff" in res.text):
+                            html_to_parse = res.text
+                            break
+                    except: pass
+                if "Period" in html_to_parse: break
+                
+        data_soup = BeautifulSoup(html_to_parse, "html.parser")
+        
+        # Scan the results for the timetable grid and the legend mapping table
+        for table in data_soup.find_all("table"):
+            header_text = table.get_text(separator=" ", strip=True).lower()
+            if "period - i" in header_text:
+                for tr in table.find_all("tr"):
+                    cols = tr.find_all(["th", "td"])
+                    if not cols: continue
+                    day_text = cols[0].get_text(separator=" ", strip=True)
+                    if any(d in day_text.lower() for d in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]):
+                        periods = []
+                        # Loop through remaining columns representing Periods I through VI+
+                        for col in cols[1:]:
+                            p_text = col.get_text(separator="\n", strip=True)
+                            periods.append(p_text if p_text else "-")
+                        schedule.append({"day": day_text, "periods": periods})
+            elif "staff name" in header_text and "subject code" in header_text:
+                for tr in table.find_all("tr"):
+                    cols = tr.find_all("td")
+                    if len(cols) >= 5 and cols[0].get_text(strip=True).isdigit():
+                        subjects.append({
+                            "code": cols[1].get_text(strip=True),
+                            "name": cols[2].get_text(strip=True),
+                            "short": cols[3].get_text(strip=True) if len(cols) > 3 else "",
+                            "staff": cols[5].get_text(strip=True) if len(cols) > 5 else (cols[4].get_text(strip=True) if len(cols) > 4 else "")
+                        })
+                        
+        return {"ok": True, "ays": ays, "sections": sections, "schedule": schedule, "subjects": subjects}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "ays": [], "sections": [], "schedule": [], "subjects": []}
+
 def rasterize_and_compress_pdf(file_bytes):
     if not fitz or not Image: raise Exception("PyMuPDF/Pillow missing.")
     doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -474,19 +541,28 @@ def api_marks():
     token = require_token()
     return jsonify({"midmarks": scrape_midmarks(SESSIONS[token])})
 
+@app.route("/timetable", methods=["POST"])
+def api_timetable():
+    token = require_token()
+    data = request.get_json() or {}
+    ay = data.get("ay")
+    section = data.get("section")
+    return jsonify(scrape_timetable(SESSIONS[token], ay, section))
+
 @app.route("/all", methods=["GET"])
 def api_all():
     token = require_token()
     session = SESSIONS[token]
     username = TOKENS[token]["username"]  
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
             f_att = executor.submit(scrape_attendance, session)
             f_bio = executor.submit(scrape_biometric, session)
             f_mid = executor.submit(scrape_midmarks, session)
             f_pro = executor.submit(scrape_profile, session, username)
             f_res = executor.submit(scrape_results, session)
             f_mem = executor.submit(scrape_memos, session, username)
+            f_tt  = executor.submit(scrape_timetable, session, None, None)
             
         results_info = f_res.result()
         results_info["memos"] = f_mem.result()
@@ -497,7 +573,8 @@ def api_all():
             "biometric": f_bio.result(), 
             "midmarks": f_mid.result(), 
             "profile": f_pro.result(), 
-            "results": results_info
+            "results": results_info,
+            "timetable_init": f_tt.result()
         })
     except SessionExpiredError: abort(401)
 
