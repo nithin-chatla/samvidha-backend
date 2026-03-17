@@ -226,18 +226,21 @@ def scrape_memos(session, username):
         
         if r.status_code == 200:
             raw_html = r.text
-            extracted_links = set()
+            extracted_links = [] # FIXED: Using a LIST instead of a set to perfectly preserve link order!
             a_html = ""
             
             # STRATEGY 1: Aggressive PDF hunt directly in HTML
             pdf_matches = re.findall(rf'({roll}_\d+\.pdf)', raw_html, re.IGNORECASE)
             for pdf in pdf_matches:
-                extracted_links.add(f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}")
+                link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
+                if link not in extracted_links: 
+                    extracted_links.append(link)
             
             # STRATEGY 2: Hunt for direct S3 links in HTML
             s3_matches = re.findall(r'(https://iare-data\.s3[^\s"\'<>]+)', raw_html, re.IGNORECASE)
             for link in s3_matches:
-                if link.endswith('.pdf'): extracted_links.add(link)
+                if link.endswith('.pdf') and link not in extracted_links: 
+                    extracted_links.append(link)
             
             # STRATEGY 3: Brute-Force the invisible AJAX endpoint if JS rendered
             if not extracted_links:
@@ -247,11 +250,10 @@ def scrape_memos(session, username):
                     "pages/student/my_box/ajax/mybox.php"
                 ])
                 
-                test_urls = set()
+                test_urls = []
                 for url in ajax_urls:
-                    if url.startswith("/"): test_urls.add(BASE + url)
-                    elif not url.startswith("http"): test_urls.add(BASE + "/" + url)
-                    else: test_urls.add(url)
+                    clean_url = BASE + url if url.startswith("/") else (url if url.startswith("http") else BASE + "/" + url)
+                    if clean_url not in test_urls: test_urls.append(clean_url)
                 
                 headers = {'x-requested-with': 'XMLHttpRequest'}
                 for url in test_urls:
@@ -265,9 +267,10 @@ def scrape_memos(session, username):
                                 s3s = re.findall(r'(https://iare-data\.s3[^\s"\'<>]+)', a_html, re.IGNORECASE)
                                 
                                 for p in pdfs: 
-                                    extracted_links.add(f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{p}")
+                                    link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{p}"
+                                    if link not in extracted_links: extracted_links.append(link)
                                 for l in s3s: 
-                                    if l.endswith('.pdf'): extracted_links.add(l)
+                                    if l.endswith('.pdf') and l not in extracted_links: extracted_links.append(l)
                                 if extracted_links: break
                         except: pass
                     if extracted_links: break
@@ -278,14 +281,32 @@ def scrape_memos(session, username):
             for content in [raw_html, a_html]:
                 if not content: continue
                 soup = BeautifulSoup(content, "html.parser")
-                for td in soup.find_all(["td", "span", "div"]):
-                    txt = td.get_text(strip=True)
-                    if any(x in txt.upper() for x in ["B. TECH", "EXAMINATION", "MEMO", "REGULAR", "SUPPLEMENTARY"]):
-                        if txt not in titles and len(txt) < 80: titles.append(txt)
-                    if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
-                        if txt not in dates: dates.append(txt)
+                
+                # FIXED: Destroy action buttons before reading so "Cancel" and "Print" vanish!
+                for junk in soup.find_all(["button", "a", "script", "style", "i"]):
+                    junk.decompose()
 
-            # Assemble everything
+                # FIXED: Extract ONLY from <td> tags to avoid the giant "My Box My Box Revaluation" <div> text!
+                for td in soup.find_all(["td"]):
+                    txt = td.get_text(separator=" ", strip=True)
+                    
+                    # Extra safety to clean any leftover button words
+                    txt = re.sub(r'(?i)(cancel|print|view|download)', '', txt).strip()
+                    txt = re.sub(r'\s+', ' ', txt) # Normalize spacing
+                    
+                    # Grab specific Titles
+                    if any(x in txt.upper() for x in ["B. TECH", "EXAMINATION", "MEMO", "REGULAR", "SUPPLEMENTARY"]):
+                        # Ensure it's not the massive header string (keep length under 120)
+                        if txt not in titles and 10 < len(txt) < 120: 
+                            titles.append(txt)
+                    
+                    # Grab Dates
+                    if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
+                        d_match = re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt).group(0)
+                        if d_match not in dates: 
+                            dates.append(d_match)
+
+            # Assemble everything (Since we used a list, they will pair up perfectly!)
             for idx, link in enumerate(extracted_links):
                 name = titles[idx] if idx < len(titles) else f"Official Grade Memo {idx+1}"
                 date = dates[idx] if idx < len(dates) else "Available"
@@ -393,8 +414,8 @@ def require_token():
 @app.route("/check_update", methods=["GET"])
 def check_update():
     return jsonify({
-        "version": "3.0", 
-        "build_number": 3, 
+        "version": "4.0", 
+        "build_number": 4, 
         "download_url": "https://paste-your-google-drive-link-here.com"
     })
 
