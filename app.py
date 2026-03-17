@@ -225,116 +225,70 @@ def scrape_memos(session, username):
         roll = username.upper()
         
         if r.status_code == 200:
-            raw_html = r.text
-            a_html = ""
+            soup = BeautifulSoup(r.text, "html.parser")
             
-            # 1. Background AJAX Extractor
-            ajax_urls = re.findall(r'url\s*:\s*[\'"]([^\'"]+\.php)[\'"]', raw_html, re.IGNORECASE)
-            ajax_urls.extend(["pages/student/mybox/ajax/mybox.php", "pages/student/my_box/ajax/mybox.php"])
-            test_urls = []
-            for url in ajax_urls:
-                clean_url = BASE + url if url.startswith("/") else (url if url.startswith("http") else BASE + "/" + url)
-                if clean_url not in test_urls: test_urls.append(clean_url)
-            
-            headers = {'x-requested-with': 'XMLHttpRequest'}
-            for url in test_urls:
-                for action in ['get_mybox', 'get_mybox_data', 'get_data', '']:
-                    try:
-                        payload = {'action': action} if action else {}
-                        ajax_res = session.post(url, data=payload, headers=headers, timeout=5)
-                        if ajax_res.status_code == 200 and (".pdf" in ajax_res.text.lower() or roll in ajax_res.text.upper()):
-                            a_html = ajax_res.text
-                            break
-                    except: pass
-                if a_html: break
-
-            # 2. Precision Row-by-Row Extractor (For standard HTML tables)
-            for content in [raw_html, a_html]:
-                if not content: continue
-                soup = BeautifulSoup(content, "html.parser")
+            for tr in soup.find_all("tr"):
+                cols = tr.find_all("td")
+                if len(cols) < 3: continue
                 
-                for tr in soup.find_all("tr"):
-                    row_html = str(tr)
-                    href = None
-                    
-                    pdf_match = re.search(rf'({roll}_\d+\.pdf)', row_html, re.IGNORECASE)
-                    if pdf_match:
-                        href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_match.group(1)}"
-                    else:
-                        s3_match = re.search(r'(https://iare-data\.s3[^\s"\'<>]+\.pdf)', row_html, re.IGNORECASE)
-                        if s3_match:
-                            href = s3_match.group(1)
-                        else:
-                            win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", row_html, re.IGNORECASE)
-                            if win_match and win_match.group(1).endswith(".pdf"):
-                                href = win_match.group(1)
-                                if not href.startswith("http"):
-                                    pdf_name = href.split('/')[-1]
-                                    href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_name}"
-
-                    if not href or any(m['link'] == href for m in memos):
-                        continue
+                date_idx = -1
+                date_str = ""
+                for i, col in enumerate(cols):
+                    txt = col.get_text(strip=True)
+                    if re.search(r'\d{2}[-/]\d{2}[-/]\d{2,4}', txt):
+                        date_idx = i
+                        date_str = txt
+                        break
                         
-                    # Destroy ALL buttons, links, and icons in this row before reading text!
-                    for junk in tr.find_all(["button", "a", "script", "style", "i", "span"]):
+                if date_idx > 0:
+                    name_cell = cols[date_idx - 1]
+                    
+                    # Remove hidden buttons/links inside the name cell before getting text
+                    for junk in name_cell.find_all(["button", "a", "i", "span"]):
                         junk.decompose()
                         
-                    cols = tr.find_all(["td", "th"])
-                    name = "Official Grade Memo"
-                    date = "Available"
+                    raw_name = name_cell.get_text(separator=" ", strip=True)
                     
-                    for col in cols:
-                        txt = col.get_text(separator=" ", strip=True)
-                        txt = re.sub(r'(?i)(cancel|print|view|download|close)', '', txt).strip(' -:>')
-                        txt = re.sub(r'\s+', ' ', txt).strip()
-                        
-                        if re.match(r'^\d{2}[-/]\d{2}[-/]\d{2,4}$', txt):
-                            date = txt
-                        elif any(x in txt.upper() for x in ["B. TECH", "EXAMINATION", "MEMO", "REGULAR", "SUPPLEMENTARY", "RESULTS"]):
-                            if 5 < len(txt) < 150: 
-                                name = txt
+                    # Clean the name of those hidden buttons!
+                    name = re.sub(r'(?i)(cancel|print|view|download|file|close)', '', raw_name)
+                    name = re.sub(r'\s+', ' ', name).strip(' -:>')
+                    
+                    if not name or len(name) < 5 or name.isdigit() or "no data" in name.lower():
+                        continue
+                    
+                    href = None
+                    
+                    for element in tr.find_all(["a", "button"]):
+                        if element.get("onclick"):
+                            match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", element["onclick"])
+                            if match:
+                                href = match.group(1)
+                                break
+                        elif element.name == "a" and element.get("href"):
+                            h = element["href"]
+                            if "javascript" not in h.lower() and h != "#":
+                                href = h
+                                break
                                 
-                    memos.append({"name": name, "date": date, "link": href})
-
-            # 3. Ultimate Envelope Scanner Fallback (For purely Javascript-rendered or JSON APIs)
-            if not memos:
-                combined = raw_html + a_html
-                pdfs = re.findall(rf'({roll}_\d+\.pdf)', combined, re.IGNORECASE)
-                pdfs = list(dict.fromkeys(pdfs))
-                
-                for idx, pdf in enumerate(pdfs):
-                    link = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf}"
-                    if any(m['link'] == link for m in memos): continue
-                    
-                    match_pos = combined.find(pdf)
-                    name = f"Official Grade Memo {idx+1}"
-                    date = "Available"
-                    
-                    if match_pos != -1:
-                        # CRITICAL FIX: The "Envelope Scanner". 
-                        # Isolate a tight chunk of text symmetrically around the PDF to PREVENT stealing adjacent names!
-                        context = combined[max(0, match_pos - 250) : min(len(combined), match_pos + 250)]
+                    if not href:
+                        raw_html = str(tr)
+                        match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", raw_html, re.I)
+                        if match:
+                            href = match.group(1)
+                        else:
+                            match = re.search(r"['\"]([^'\"]+\.pdf)['\"]", raw_html, re.I)
+                            if match:
+                                href = match.group(1)
+                            
+                    if href:
+                        # Construct the Amazon S3 link dynamically using your roll number
+                        if href.endswith(".pdf") and "/" not in href:
+                            href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{href}"
+                        elif href.startswith("/"): href = BASE + href
+                        elif not href.startswith("http"): href = BASE + "/" + href
                         
-                        d_matches = re.findall(r'\d{2}[-/]\d{2}[-/]\d{4}', context)
-                        if d_matches: 
-                            # Take the date closest to the PDF
-                            date = d_matches[-1] if context.find(d_matches[0]) < 250 else d_matches[0]
-                            
-                        # Look for either 'B. TECH' or 'EXAMINATION' strictly without jumping past quote marks
-                        n_matches = re.findall(r'((?:B\.\s*TECH|EXAMINATION)[^"\'<,\\]+)', context, re.IGNORECASE)
-                        if n_matches:
-                            best_name = ""
-                            for raw_name in n_matches:
-                                clean_name = re.sub(r'(?i)(cancel|print|view|download|close|btn|class|href|javascript|my box|revaluation|s\.no|exam title)', '', raw_name).strip(' -:>')
-                                clean_name = re.sub(r'\s+', ' ', clean_name).strip()
-                                
-                                # Find the longest valid string that isn't pulling in junk code
-                                if len(clean_name) > len(best_name) and len(clean_name) < 150:
-                                    best_name = clean_name
-                            
-                            if best_name: name = best_name
-                            
-                    memos.append({"name": name, "date": date, "link": link})
+                        if not any(m['link'] == href for m in memos):
+                            memos.append({"name": name, "date": date_str, "link": href})
 
             return memos
     except Exception as e:
