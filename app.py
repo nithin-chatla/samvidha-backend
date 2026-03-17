@@ -228,7 +228,7 @@ def scrape_memos(session, username):
             raw_html = r.text
             a_html = ""
             
-            # 1. Background AJAX Extractor (if dynamically loaded)
+            # 1. Background AJAX Extractor
             ajax_urls = re.findall(r'url\s*:\s*[\'"]([^\'"]+\.php)[\'"]', raw_html, re.IGNORECASE)
             ajax_urls.extend(["pages/student/mybox/ajax/mybox.php", "pages/student/my_box/ajax/mybox.php"])
             test_urls = []
@@ -248,17 +248,15 @@ def scrape_memos(session, username):
                     except: pass
                 if a_html: break
 
-            # 2. Precision Row-by-Row Extractor
+            # 2. Precision Row-by-Row Extractor (For standard HTML tables)
             for content in [raw_html, a_html]:
                 if not content: continue
                 soup = BeautifulSoup(content, "html.parser")
                 
-                # Check each table row individually
                 for tr in soup.find_all("tr"):
                     row_html = str(tr)
                     href = None
                     
-                    # Search specifically for PDF links INSIDE this row
                     pdf_match = re.search(rf'({roll}_\d+\.pdf)', row_html, re.IGNORECASE)
                     if pdf_match:
                         href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_match.group(1)}"
@@ -285,11 +283,8 @@ def scrape_memos(session, username):
                     name = "Official Grade Memo"
                     date = "Available"
                     
-                    # Extract the clean text directly from the cells
                     for col in cols:
                         txt = col.get_text(separator=" ", strip=True)
-                        
-                        # Extra purification pass
                         txt = re.sub(r'(?i)(cancel|print|view|download|close)', '', txt).strip(' -:>')
                         txt = re.sub(r'\s+', ' ', txt).strip()
                         
@@ -301,7 +296,7 @@ def scrape_memos(session, username):
                                 
                     memos.append({"name": name, "date": date, "link": href})
 
-            # 3. Ultimate Regex Fallback (Only runs if the row extractor found completely nothing)
+            # 3. Ultimate Envelope Scanner Fallback (For purely Javascript-rendered or JSON APIs)
             if not memos:
                 combined = raw_html + a_html
                 pdfs = re.findall(rf'({roll}_\d+\.pdf)', combined, re.IGNORECASE)
@@ -316,17 +311,28 @@ def scrape_memos(session, username):
                     date = "Available"
                     
                     if match_pos != -1:
-                        # Grab the block of text right before the PDF link
-                        context = combined[max(0, match_pos - 500):match_pos]
-                        d_match = re.search(r'\d{2}[-/]\d{2}[-/]\d{4}', context)
-                        if d_match: date = d_match.group(0)
+                        # CRITICAL FIX: The "Envelope Scanner". 
+                        # Isolate a tight chunk of text symmetrically around the PDF to PREVENT stealing adjacent names!
+                        context = combined[max(0, match_pos - 250) : min(len(combined), match_pos + 250)]
                         
-                        n_match = re.search(r'(B\.\s*TECH[^"\'<,\\]+)', context, re.IGNORECASE)
-                        if n_match:
-                            raw_name = n_match.group(1)
-                            clean_name = re.sub(r'(?i)(cancel|print|view|download|close|btn|class|href|javascript|my box|revaluation|s\.no|exam title)', '', raw_name).strip(' -:>')
-                            clean_name = re.sub(r'\s+', ' ', clean_name).strip()
-                            if clean_name: name = clean_name
+                        d_matches = re.findall(r'\d{2}[-/]\d{2}[-/]\d{4}', context)
+                        if d_matches: 
+                            # Take the date closest to the PDF
+                            date = d_matches[-1] if context.find(d_matches[0]) < 250 else d_matches[0]
+                            
+                        # Look for either 'B. TECH' or 'EXAMINATION' strictly without jumping past quote marks
+                        n_matches = re.findall(r'((?:B\.\s*TECH|EXAMINATION)[^"\'<,\\]+)', context, re.IGNORECASE)
+                        if n_matches:
+                            best_name = ""
+                            for raw_name in n_matches:
+                                clean_name = re.sub(r'(?i)(cancel|print|view|download|close|btn|class|href|javascript|my box|revaluation|s\.no|exam title)', '', raw_name).strip(' -:>')
+                                clean_name = re.sub(r'\s+', ' ', clean_name).strip()
+                                
+                                # Find the longest valid string that isn't pulling in junk code
+                                if len(clean_name) > len(best_name) and len(clean_name) < 150:
+                                    best_name = clean_name
+                            
+                            if best_name: name = best_name
                             
                     memos.append({"name": name, "date": date, "link": link})
 
