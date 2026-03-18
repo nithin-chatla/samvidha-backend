@@ -566,8 +566,8 @@ def require_token():
 def check_update():
     return jsonify({
         "version": "4.0", 
-        "build_number": 4, 
-        "download_url": "https://paste-your-google-drive-link-here.com"
+        "build_number": 5, 
+        "download_url": "https://drive.google.com/file/d/1X0eKctWkPjXAP_g_Z9jxiFx1-Duv89ol/view?usp=sharing"
     })
 
 @app.route("/login", methods=["POST"])
