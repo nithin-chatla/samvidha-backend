@@ -551,6 +551,7 @@ def scrape_qp_data(session, select_name, exam_code):
         seen_codes = set()
         html_content = ""
 
+        # Helper to extract actual AWS S3 PDF Links from DataTables rows or raw HTML
         def extract_link(html_str):
             if not html_str: return None
             html_upper = html_str.upper()
@@ -636,7 +637,28 @@ def scrape_qp_data(session, select_name, exam_code):
                         j = r_ajax.json()
                         if 'data' in j:
                             for row in j['data']:
-                                if isinstance(row, list) and len(row) >= 6:
+                                # Based on user payload JSON structure (List of Dictionaries instead of List of Lists)
+                                if isinstance(row, dict):
+                                    c_code = row.get('sub_code', '').strip()
+                                    c_name = row.get('sub_title', '').strip()
+                                    c_date = row.get('exam_date', '').strip()
+                                    qp_link = row.get('qp', '').strip()
+                                    sol_link = row.get('scheme', '').strip()
+                                    
+                                    if qp_link and not qp_link.startswith('http'): qp_link = BASE + '/' + qp_link.lstrip('/')
+                                    if sol_link and not sol_link.startswith('http'): sol_link = BASE + '/' + sol_link.lstrip('/')
+                                    
+                                    if c_code and (qp_link or sol_link):
+                                        data.append({
+                                            "course_code": c_code,
+                                            "course_name": c_name,
+                                            "date": c_date,
+                                            "qp_link": qp_link if qp_link else None,
+                                            "sol_link": sol_link if sol_link else None
+                                        })
+                                        seen_codes.add(c_code)
+                                # Fallback for List of Lists structure
+                                elif isinstance(row, list) and len(row) >= 6:
                                     add_record(
                                         BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
                                         BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True),
@@ -679,7 +701,26 @@ def scrape_qp_data(session, select_name, exam_code):
                                 j = r2.json()
                                 if 'data' in j:
                                     for row in j['data']:
-                                        if isinstance(row, list) and len(row) >= 6:
+                                        if isinstance(row, dict):
+                                            c_code = row.get('sub_code', '').strip()
+                                            c_name = row.get('sub_title', '').strip()
+                                            c_date = row.get('exam_date', '').strip()
+                                            qp_link = row.get('qp', '').strip()
+                                            sol_link = row.get('scheme', '').strip()
+                                            
+                                            if qp_link and not qp_link.startswith('http'): qp_link = BASE + '/' + qp_link.lstrip('/')
+                                            if sol_link and not sol_link.startswith('http'): sol_link = BASE + '/' + sol_link.lstrip('/')
+                                            
+                                            if c_code and (qp_link or sol_link):
+                                                data.append({
+                                                    "course_code": c_code,
+                                                    "course_name": c_name,
+                                                    "date": c_date,
+                                                    "qp_link": qp_link if qp_link else None,
+                                                    "sol_link": sol_link if sol_link else None
+                                                })
+                                                seen_codes.add(c_code)
+                                        elif isinstance(row, list) and len(row) >= 6:
                                             add_record(
                                                 BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
                                                 BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True),
