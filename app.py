@@ -228,7 +228,6 @@ def scrape_memos(session, username):
             raw_html = r.text
             a_html = ""
             
-            # 1. Background AJAX Extractor
             ajax_urls = re.findall(r'url\s*:\s*[\'"]([^\'"]+\.php)[\'"]', raw_html, re.IGNORECASE)
             ajax_urls.extend(["pages/student/mybox/ajax/mybox.php", "pages/student/my_box/ajax/mybox.php"])
             test_urls = []
@@ -248,7 +247,6 @@ def scrape_memos(session, username):
                     except: pass
                 if a_html: break
 
-            # 2. Precision Row-by-Row Extractor (For standard HTML tables)
             for content in [raw_html, a_html]:
                 if not content: continue
                 soup = BeautifulSoup(content, "html.parser")
@@ -297,7 +295,6 @@ def scrape_memos(session, username):
                                 
                     memos.append({"name": name, "date": date, "link": href})
 
-            # 3. Ultimate Envelope Scanner Fallback
             if not memos:
                 combined = raw_html + a_html
                 pdfs = re.findall(rf'({roll}_\d+\.pdf)', combined, re.IGNORECASE)
@@ -415,7 +412,6 @@ def scrape_timetable(session, ay=None, section=None):
         ay_input_name = "ay"
         sec_input_name = "sec"
         
-        # Scrape Dropdowns dynamically to ensure we get exactly what the form expects
         sel_ay = soup.find('select', id=re.compile(r'ay', re.I)) or soup.find('select', {'name': re.compile(r'ay', re.I)})
         if sel_ay:
             ay_input_name = sel_ay.get('name', 'ay')
@@ -431,7 +427,6 @@ def scrape_timetable(session, ay=None, section=None):
         
         if ay and section:
             try:
-                # 1. Standard POST request dynamically populated from hidden inputs and submit buttons
                 form_data = {
                     ay_input_name: ay,
                     sec_input_name: section,
@@ -456,7 +451,6 @@ def scrape_timetable(session, ay=None, section=None):
                     html_to_parse = res.text
             except: pass
             
-            # 2. AJAX Fallback (if standard form POST failed to yield "Period" markers)
             if "Period" not in html_to_parse:
                 ajax_urls = [
                     BASE + "/pages/student/timetable/ajax/timetable.php",
@@ -479,7 +473,6 @@ def scrape_timetable(session, ay=None, section=None):
 
         data_soup = BeautifulSoup(html_to_parse, "html.parser")
         
-        # CRITICAL FIX: Parse timetable cells into dictionary instead of flat string!
         for table in data_soup.find_all("table"):
             header_text = table.get_text(separator=" ", strip=True).lower()
             if "period - i" in header_text or "period" in header_text:
@@ -490,41 +483,21 @@ def scrape_timetable(session, ay=None, section=None):
                     
                     if any(d in day_text.lower() for d in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]):
                         periods = []
-                        # Loop through remaining columns representing Periods I through VI+
                         for col in cols[1:]:
                             p_text = col.get_text(separator="\n", strip=True)
-                            
-                            # If cell is empty or "-", mark it as a free period
                             if not p_text or p_text == "-":
-                                periods.append({
-                                    "isFree": True,
-                                    "subject": "-",
-                                    "room": "",
-                                    "faculty": ""
-                                })
+                                periods.append({"isFree": True, "subject": "-", "room": "", "faculty": ""})
                             else:
-                                # Split the text into lines mathematically
                                 lines = [line.strip() for line in p_text.split('\n') if line.strip()]
                                 subject = lines[0] if len(lines) > 0 else "-"
                                 room = ""
                                 faculty = ""
-                                
-                                # Process the remaining lines looking for Room and Faculty markers
                                 for line in lines[1:]:
-                                    if "Room" in line:
-                                        room = line.replace("Room", "").replace(":", "").strip()
-                                    elif "Faculty" in line or "Staff" in line:
-                                        faculty = line.replace("Faculty Id", "").replace("Faculty", "").replace(":", "").strip()
-                                        
-                                periods.append({
-                                    "isFree": False,
-                                    "subject": subject,
-                                    "room": room,
-                                    "faculty": faculty
-                                })
+                                    if "Room" in line: room = line.replace("Room", "").replace(":", "").strip()
+                                    elif "Faculty" in line or "Staff" in line: faculty = line.replace("Faculty Id", "").replace("Faculty", "").replace(":", "").strip()
+                                periods.append({"isFree": False, "subject": subject, "room": room, "faculty": faculty})
 
-                        if periods:
-                            schedule.append({"day": day_text, "periods": periods})
+                        if periods: schedule.append({"day": day_text, "periods": periods})
                             
             elif "staff name" in header_text and "subject code" in header_text:
                 for tr in table.find_all("tr"):
@@ -540,6 +513,93 @@ def scrape_timetable(session, ay=None, section=None):
         return {"ok": True, "ays": ays, "sections": sections, "schedule": schedule, "subjects": subjects}
     except Exception as e:
         return {"ok": False, "error": str(e), "ays": [], "sections": [], "schedule": [], "subjects": []}
+
+def scrape_qp_init(session):
+    try:
+        r = session.get(BASE + "/home?action=qp_scheme", timeout=15)
+        check_auth(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        options = []
+        select_name = "exam_code"
+        
+        for select in soup.find_all('select'):
+            opts = select.find_all('option')
+            if len(opts) > 1:
+                select_name = select.get('name', 'exam_code')
+                for opt in opts:
+                    val = opt.get('value', '').strip()
+                    text = opt.get_text(strip=True)
+                    if val and val != "0" and "Select" not in text:
+                        options.append({"value": val, "label": text})
+                break
+        return {"ok": True, "options": options, "select_name": select_name}
+    except SessionExpiredError:
+        raise
+    except Exception as e:
+        return {"ok": False, "error": str(e), "options": []}
+
+def scrape_qp_data(session, select_name, exam_code):
+    try:
+        payload = {select_name: exam_code, "action": "qp_scheme", "submit": "show", "btnSubmit": "show"}
+        r = session.post(BASE + "/home?action=qp_scheme", data=payload, timeout=15)
+        check_auth(r)
+        
+        if "Course Code" not in r.text:
+            ajax_urls = [
+                BASE + "/pages/student/qp_scheme/ajax/qp_scheme.php",
+                BASE + "/pages/student/question_paper/ajax/qp.php"
+            ]
+            ajax_match = re.search(r'url\s*:\s*["\']([^"\']+\.php)["\']', r.text)
+            if ajax_match:
+                url = ajax_match.group(1)
+                ajax_urls.insert(0, BASE + '/' + url.lstrip('/') if not url.startswith('http') else url)
+                
+            for url in ajax_urls:
+                for action in ['get_data', 'get_qp_data', 'show_data']:
+                    try:
+                        r2 = session.post(url, data={select_name: exam_code, 'action': action}, headers={'x-requested-with': 'XMLHttpRequest'}, timeout=10)
+                        if "Course Code" in r2.text:
+                            r = r2
+                            break
+                    except: pass
+                if "Course Code" in r.text: break
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        data = []
+        for table in soup.find_all("table"):
+            if "Course Name" in table.get_text() and "Question Paper" in table.get_text():
+                for tr in table.find_all("tr")[1:]:
+                    cols = tr.find_all(["td", "th"])
+                    if len(cols) >= 6 and cols[0].get_text(strip=True).isdigit():
+                        def extract_link(td):
+                            a = td.find('a', href=True)
+                            if a and a['href'] != '#' and 'javascript' not in a['href'].lower():
+                                return a['href']
+                            btn = td.find(['button', 'a'], onclick=True)
+                            if btn:
+                                m = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", btn['onclick'])
+                                if m: return m.group(1)
+                            return None
+
+                        qp_link = extract_link(cols[4])
+                        sol_link = extract_link(cols[5])
+                        
+                        if qp_link and not qp_link.startswith('http'): qp_link = BASE + '/' + qp_link.lstrip('/')
+                        if sol_link and not sol_link.startswith('http'): sol_link = BASE + '/' + sol_link.lstrip('/')
+
+                        data.append({
+                            "course_code": cols[1].get_text(strip=True),
+                            "course_name": cols[2].get_text(strip=True),
+                            "date": cols[3].get_text(strip=True),
+                            "qp_link": qp_link,
+                            "sol_link": sol_link
+                        })
+                break
+        return {"ok": True, "records": data}
+    except SessionExpiredError:
+        raise
+    except Exception as e:
+        return {"ok": False, "records": [], "error": str(e)}
 
 def rasterize_and_compress_pdf(file_bytes):
     if not fitz or not Image: raise Exception("PyMuPDF/Pillow missing.")
@@ -566,8 +626,8 @@ def require_token():
 def check_update():
     return jsonify({
         "version": "4.0", 
-        "build_number": 5, 
-        "download_url": "https://drive.google.com/file/d/1X0eKctWkPjXAP_g_Z9jxiFx1-Duv89ol/view?usp=sharing"
+        "build_number": 4, 
+        "download_url": "https://paste-your-google-drive-link-here.com"
     })
 
 @app.route("/login", methods=["POST"])
@@ -608,9 +668,18 @@ def api_marks():
 def api_timetable():
     token = require_token()
     data = request.get_json() or {}
-    ay = data.get("ay")
-    section = data.get("section")
-    return jsonify(scrape_timetable(SESSIONS[token], ay, section))
+    return jsonify(scrape_timetable(SESSIONS[token], data.get("ay"), data.get("section")))
+
+@app.route("/qp_init", methods=["GET"])
+def api_qp_init():
+    token = require_token()
+    return jsonify(scrape_qp_init(SESSIONS[token]))
+
+@app.route("/qp_data", methods=["POST"])
+def api_qp_data():
+    token = require_token()
+    data = request.get_json() or {}
+    return jsonify(scrape_qp_data(SESSIONS[token], data.get("select_name", "exam_code"), data.get("exam_code")))
 
 @app.route("/all", methods=["GET"])
 def api_all():
