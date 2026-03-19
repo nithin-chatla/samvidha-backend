@@ -551,17 +551,18 @@ def scrape_qp_data(session, select_name, exam_code):
         seen_codes = set()
         html_content = ""
 
+        # Function to clean and extract exact PDF links from raw JSON responses or HTML
         def extract_from_mixed(content):
             if not content: return None
             content_str = str(content).strip()
             if not content_str or 'NOT-UPLOADED' in content_str.upper() or 'NOT UPLOADED' in content_str.upper():
                 return None
             
-            # If it's directly a URL (from JSON response)
+            # If the API returned a clean URL directly in the JSON response
             if content_str.startswith('http'):
                 return content_str.replace('\\/', '/')
             
-            # If it's HTML (fallback parser)
+            # If the API returned an HTML snippet with an anchor tag
             soup_cell = BeautifulSoup(content_str, 'html.parser')
             a = soup_cell.find('a', href=True)
             if a and not a['href'].startswith('#') and 'javascript' not in a['href'].lower():
@@ -569,9 +570,11 @@ def scrape_qp_data(session, select_name, exam_code):
                 if not link.startswith('http'): link = BASE + '/' + link.lstrip('/')
                 return link.replace('\\/', '/')
                     
+            # If the API returned a raw AWS S3 link embedded in string text
             s3_m = re.search(r'(https://iare-data\.s3[^\s"\'<>]*\.pdf)', content_str, re.IGNORECASE)
             if s3_m: return s3_m.group(1).replace('\\/', '/')
             
+            # If the API returned a JavaScript window.open link (like a button onclick)
             win_m = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", content_str, re.IGNORECASE)
             if win_m:
                 link = win_m.group(1)
@@ -597,8 +600,8 @@ def scrape_qp_data(session, select_name, exam_code):
                 })
                 seen_codes.add(c_code)
 
-        # 1. Grab required hidden inputs (like dept_id) from the main Question Paper page
-        base_urls = [BASE + "/home?action=qp_scheme", BASE + "/home?action=qp_and_solution"]
+        # 1. Very Aggressively Grab ANY hidden inputs across multiple modules (Critically needed for 'dept_id' mapping)
+        base_urls = [BASE + "/home?action=qp_scheme", BASE + "/home?action=qp_and_solution", BASE + "/home?action=labrecord_std"]
         hidden_payload = {}
         for burl in base_urls:
             try:
@@ -613,14 +616,14 @@ def scrape_qp_data(session, select_name, exam_code):
 
         dept_id = hidden_payload.get('dept_id', '')
 
+        # Universal headers perfectly matching the browser's Network request
         headers = {
             'x-requested-with': 'XMLHttpRequest',
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
             'Referer': BASE + "/home?action=qp_scheme"
         }
 
-        # 2. EXACT Match for the Network Payload provided in the screenshot
-        # The screenshot explicitly shows the path /pages/student/exam_result/ajax/qp_scheme.php
+        # 2. Fire the exact, precise payload from the user's network screenshot
         primary_ajax_url = BASE + "/pages/student/exam_result/ajax/qp_scheme.php"
         primary_payload = {
             "exam_code": exam_code,
@@ -628,7 +631,7 @@ def scrape_qp_data(session, select_name, exam_code):
             "action": "get_qp_scheme_list"
         }
         
-        # Merge any other hidden payload values (CSRF tokens)
+        # Automatically attach any CSRF tokens discovered from the DOM
         for k, v in hidden_payload.items():
             if k not in primary_payload:
                 primary_payload[k] = v
@@ -641,7 +644,7 @@ def scrape_qp_data(session, select_name, exam_code):
                         j = r_ajax.json()
                         if 'data' in j:
                             for row in j['data']:
-                                # Handing pure JSON dictionary array shown in user screenshot
+                                # Directly map exact JSON objects shown in user's Network response snapshot
                                 if isinstance(row, dict):
                                     add_record(
                                         row.get('sub_code', '').strip(),
@@ -650,7 +653,7 @@ def scrape_qp_data(session, select_name, exam_code):
                                         row.get('qp', ''),
                                         row.get('scheme', '')
                                     )
-                                # Fallback if returned as a list array inside the JSON data block
+                                # Fallback mapping if returned as DataTables 2D array list instead of object
                                 elif isinstance(row, list) and len(row) >= 6:
                                     add_record(
                                         BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
@@ -661,14 +664,13 @@ def scrape_qp_data(session, select_name, exam_code):
                     except Exception as e: 
                         print("JSON Parse Error:", e)
                 
-                # We always append to html_content in case it is returning raw HTML
+                # Append raw text to html_content variable for HTML parser fallback
                 html_content += r_ajax.text
         except: pass
 
-        # Return early if primary attempt hit correctly and found records
         if data: return {"ok": True, "records": data}
 
-        # 3. If that failed, fall back to aggressive multi-endpoint scan including the new exam_result path
+        # 3. Aggressive Multi-endpoint scan (Hits every possible variant if primary fails)
         ajax_endpoints = [
             "/pages/student/exam_result/ajax/qp_scheme.php", 
             "/pages/student/qp_scheme/ajax/qp_scheme.php",
@@ -718,7 +720,7 @@ def scrape_qp_data(session, select_name, exam_code):
                         html_content += r2.text
                 except: pass
 
-        # 4. Parse all accumulated HTML (for standard <tr> responses as seen in elements screenshot)
+        # 4. Standard HTML table parser mapping (Extracts exact layout seen in Elements DOM)
         soup = BeautifulSoup(html_content, "html.parser")
         for tr in soup.find_all("tr"):
             cols = tr.find_all(["td", "th"])
@@ -726,10 +728,11 @@ def scrape_qp_data(session, select_name, exam_code):
                 s_no_cell = cols[0].get_text(strip=True)
                 if s_no_cell.isdigit():
                     add_record(
-                        cols[1].get_text(strip=True),
-                        cols[2].get_text(strip=True),
-                        cols[3].get_text(strip=True),
-                        str(cols[4]), str(cols[5])
+                        cols[1].get_text(strip=True), # Course Code
+                        cols[2].get_text(strip=True), # Course Name
+                        cols[3].get_text(strip=True), # Date
+                        str(cols[4]), # QP HTML
+                        str(cols[5])  # Solution HTML
                     )
         
         return {"ok": True, "records": data}
