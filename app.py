@@ -8,6 +8,7 @@ import secrets
 import time
 import re
 import io
+import json
 
 try:
     import fitz  # PyMuPDF
@@ -515,175 +516,157 @@ def scrape_timetable(session, ay=None, section=None):
         return {"ok": False, "error": str(e), "ays": [], "sections": [], "schedule": [], "subjects": []}
 
 def scrape_qp_init(session):
-    try:
-        r = session.get(BASE + "/home?action=qp_scheme", timeout=15)
-        check_auth(r)
-        soup = BeautifulSoup(r.text, "html.parser")
-        options = []
-        select_name = "exam_code"
-        
-        for select in soup.find_all('select'):
-            opts = select.find_all('option')
-            if len(opts) > 1:
-                select_name = select.get('name', 'exam_code')
-                for opt in opts:
-                    val = opt.get('value', '').strip()
-                    text = opt.get_text(strip=True)
-                    if val and val != "0" and "Select" not in text:
-                        options.append({"value": val, "label": text})
-                break
-        return {"ok": True, "options": options, "select_name": select_name}
-    except SessionExpiredError:
-        raise
-    except Exception as e:
-        return {"ok": False, "error": str(e), "options": []}
+    # Check all possible page actions based on IARE standards
+    actions = ["qp_and_solution", "qp_and_solutions", "question_paper", "qp_scheme"]
+    
+    for act in actions:
+        try:
+            r = session.get(BASE + f"/home?action={act}", timeout=10)
+            check_auth(r)
+            soup = BeautifulSoup(r.text, "html.parser")
+            options = []
+            select_name = "exam_code"
+            
+            for select in soup.find_all('select'):
+                opts = select.find_all('option')
+                if len(opts) > 1:
+                    select_name = select.get('name', 'exam_code')
+                    for opt in opts:
+                        val = opt.get('value', '').strip()
+                        text = opt.get_text(strip=True)
+                        if val and val != "0" and "Select" not in text:
+                            options.append({"value": val, "label": text})
+                    break
+            
+            if options:
+                return {"ok": True, "options": options, "select_name": select_name, "action_used": act}
+        except SessionExpiredError:
+            raise
+        except:
+            continue
+            
+    return {"ok": False, "error": "Could not find exam dropdown.", "options": []}
 
 def scrape_qp_data(session, select_name, exam_code):
     try:
-        # Step 1: Trigger the initial page load to grab JS tokens/paths
-        payload = {select_name: exam_code, "action": "qp_scheme", "submit": "show", "btnSubmit": "show"}
-        r = session.post(BASE + "/home?action=qp_scheme", data=payload, timeout=15)
-        check_auth(r)
-        
-        html_content = r.text
         data = []
-
-        # Helper to extract AWS S3 links and identify NOT-UPLOADED
-        def extract_link(html_str):
-            if not html_str: return None
-            html_upper = html_str.upper()
-            if 'NOT-UPLOADED' in html_upper or 'NOT UPLOADED' in html_upper: return None
+        
+        # ---------------------------------------------------------
+        # REVERSE ENGINEERED URL BUILDER (The "Aha!" Moment)
+        # Because the portal constructs URLs using client-side JS, 
+        # we can just construct them ourselves in Python!
+        # ---------------------------------------------------------
+        def build_paper_url(e_code, c_code, c_date, p_type="qp"):
+            # Determine CIE vs SEE
+            e_type = "cie" if "cie" in e_code.lower() else "see"
             
-            # Deep Regex for AWS S3 URLs embedded in the cell
-            s3_m = re.search(r'(https://iare-data\.s3[^\s"\'<>]*\.pdf)', html_str, re.IGNORECASE)
-            if s3_m: return s3_m.group(1)
-            
-            # Deep Regex for window.open JS buttons
-            win_m = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", html_str, re.IGNORECASE)
-            if win_m:
-                l = win_m.group(1)
-                if not l.startswith('http'): l = BASE + '/' + l.lstrip('/')
-                return l
+            # Determine Academic Year (e.g. "2025-26") from Date ("01-Sep-2025")
+            try:
+                year = int(c_date.split('-')[2])
+                month = c_date.split('-')[1].lower()
+                # IARE typically uses Jun-Dec for the start of an AY
+                if month in ['jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']:
+                    ay = f"{year}-{str(year+1)[-2:]}"
+                else:
+                    ay = f"{year-1}-{str(year)[-2:]}"
+            except:
+                ay = "2025-26" # Fallback if date is weird
                 
-            # Deep Regex for standard a href tags
-            href_m = re.search(r'href=["\']([^"\']+)["\']', html_str, re.IGNORECASE)
-            if href_m:
-                l = href_m.group(1)
-                if not l.startswith('http') and not l.startswith('javascript') and l != '#': 
-                    return BASE + '/' + l.lstrip('/')
-                if l.startswith('http'): return l
+            return f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/ems/{e_type}/{ay}/{e_code}/{c_date}/{c_code}_{p_type}.pdf"
+
+        # ---------------------------------------------------------
+        # EXTRACT ROW HELPER
+        # ---------------------------------------------------------
+        def extract_row(c_code, c_name, c_date, qp_cell_text, sol_cell_text):
+            if not c_code or c_code.lower() in ["n/a", "course code"]: return None
+            
+            qp_link = None
+            sol_link = None
+            
+            # Check if NOT-UPLOADED is present
+            if 'NOT-UPLOADED' not in qp_cell_text.upper() and 'NOT UPLOADED' not in qp_cell_text.upper() and len(qp_cell_text.strip()) > 0:
+                qp_link = build_paper_url(exam_code, c_code, c_date, "qp")
+                
+            if 'NOT-UPLOADED' not in sol_cell_text.upper() and 'NOT UPLOADED' not in sol_cell_text.upper() and len(sol_cell_text.strip()) > 0:
+                sol_link = build_paper_url(exam_code, c_code, c_date, "sol")
+                
+            if qp_link or sol_link:
+                return {
+                    "course_code": c_code,
+                    "course_name": c_name,
+                    "date": c_date,
+                    "qp_link": qp_link,
+                    "sol_link": sol_link
+                }
             return None
 
-        # Step 2: Extract DataTables JSON if dynamically injected into the page script
-        import json
-        js_match = re.search(r'var\s+dataSet\s*=\s*(\[\[.*?\]\]);', html_content, re.DOTALL)
-        if js_match:
-            try:
-                rows = json.loads(js_match.group(1))
-                for row in rows:
-                    if len(row) >= 5:
-                        c_code = BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True) if len(row) > 1 else "N/A"
-                        c_name = BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True) if len(row) > 2 else "Question Paper"
-                        c_date = BeautifulSoup(str(row[3]), 'html.parser').get_text(strip=True) if len(row) > 3 else "Available"
-                        qp_link = extract_link(str(row[4]))
-                        sol_link = extract_link(str(row[5])) if len(row) > 5 else None
-                        
-                        if qp_link or sol_link:
-                            data.append({
-                                "course_code": c_code,
-                                "course_name": c_name,
-                                "date": c_date,
-                                "qp_link": qp_link,
-                                "sol_link": sol_link
-                            })
-            except Exception: pass
-
-        if data: return {"ok": True, "records": data}
-
-        # Step 3: Aggressively hit the AJAX endpoint behind the scenes
-        ajax_urls = [
-            BASE + "/pages/student/qp_scheme/ajax/qp_scheme_data.php",
-            BASE + "/pages/student/qp_scheme/ajax/get_data.php",
-            BASE + "/pages/student/qp_scheme/ajax/qp_scheme.php",
-            BASE + "/pages/student/question_paper/ajax/get_data.php",
-            BASE + "/pages/student/question_paper/ajax/qp.php",
-            BASE + "/pages/student/qp_and_solution/ajax/get_data.php",
-            BASE + "/pages/student/qp_and_solutions/ajax/get_data.php"
-        ]
+        # ---------------------------------------------------------
+        # SCRAPING LOGIC
+        # ---------------------------------------------------------
+        html_content = ""
+        actions = ["qp_and_solution", "qp_and_solutions", "question_paper", "qp_scheme"]
         
-        # Scrape script tags to find the exact dynamic AJAX path
-        url_matches = re.findall(r'url\s*:\s*["\']([^"\']+\.php)["\']', html_content)
-        for url in url_matches:
-            if url.startswith('http'): clean_url = url
-            elif url.startswith('/'): clean_url = BASE + url
-            else:
-                base_dir_match = re.search(r'src=["\']([^"\']+/pages/student/[^/]+/)', html_content, re.IGNORECASE)
-                base_dir = base_dir_match.group(1) if base_dir_match else "/pages/student/qp_scheme/"
-                clean_url = BASE + base_dir + url
+        # 1. Hit the base pages
+        for act in actions:
+            try:
+                payload = {select_name: exam_code, "action": act, "submit": "show", "btnSubmit": "show"}
+                r = session.post(BASE + f"/home?action={act}", data=payload, timeout=8)
+                html_content += r.text
+            except: pass
             
-            if clean_url not in ajax_urls: ajax_urls.insert(0, clean_url)
-                
-        # Send complete DataTables payload to the AJAX paths
-        for url in ajax_urls:
-            for action in ['get_data', 'get_qp_data', 'show_data', 'get_scheme', 'get_qp_scheme', '']:
+        # 2. Hit the hidden AJAX endpoints directly
+        ajax_urls = set()
+        for act in actions:
+            ajax_urls.add(BASE + f"/pages/student/{act}/ajax/get_data.php")
+            ajax_urls.add(BASE + f"/pages/student/{act}/ajax/{act}.php")
+            ajax_urls.add(BASE + f"/pages/student/{act}/ajax/qp.php")
+            
+        for url in list(ajax_urls):
+            for action_val in ['get_data', 'show_data', 'get_qp_data', 'get_scheme', '']:
                 try:
                     ajax_payload = {
-                        select_name: exam_code, 
-                        'exam_code': exam_code, 
-                        'examCode': exam_code,
-                        'exam': exam_code, 
-                        'action': action,
+                        select_name: exam_code, 'exam_code': exam_code, 'examCode': exam_code,
+                        'exam': exam_code, 'action': action_val,
                         'draw': '1', 'start': '0', 'length': '100'
                     }
-                    r2 = session.post(url, data=ajax_payload, headers={'x-requested-with': 'XMLHttpRequest'}, timeout=8)
+                    r2 = session.post(url, data=ajax_payload, headers={'x-requested-with': 'XMLHttpRequest'}, timeout=6)
                     if r2.status_code == 200:
-                        try:
-                            # Parse JSON DataTable Response
-                            j = r2.json()
-                            if 'data' in j:
-                                for row in j['data']:
-                                    if len(row) >= 5:
-                                        c_code = BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True) if len(row) > 1 else "N/A"
-                                        c_name = BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True) if len(row) > 2 else "Question Paper"
-                                        c_date = BeautifulSoup(str(row[3]), 'html.parser').get_text(strip=True) if len(row) > 3 else "Available"
-                                        qp_link = extract_link(str(row[4])) if len(row) > 4 else None
-                                        sol_link = extract_link(str(row[5])) if len(row) > 5 else None
-                                        if qp_link or sol_link:
-                                            data.append({"course_code": c_code, "course_name": c_name, "date": c_date, "qp_link": qp_link, "sol_link": sol_link})
-                                if data: return {"ok": True, "records": data}
-                        except Exception: pass
-                        
-                        # If AJAX returns raw HTML instead of JSON
-                        response_text = r2.text
-                        if "course" in response_text.lower() or "s3" in response_text.lower() or "not-uploaded" in response_text.lower():
-                            html_content += response_text
-                except Exception: pass
+                        # If JSON DataTable Response
+                        if "{" in r2.text:
+                            try:
+                                j = r2.json()
+                                if 'data' in j:
+                                    for row in j['data']:
+                                        if isinstance(row, list) and len(row) >= 5:
+                                            c_code = BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True)
+                                            c_name = BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True)
+                                            c_date = BeautifulSoup(str(row[3]), 'html.parser').get_text(strip=True)
+                                            
+                                            # Send the raw HTML of the button cells to our extractor
+                                            parsed = extract_row(c_code, c_name, c_date, str(row[4]), str(row[5]) if len(row)>5 else "")
+                                            if parsed: data.append(parsed)
+                                    if data: return {"ok": True, "records": data}
+                            except: pass
+                        # If raw HTML response
+                        html_content += r2.text
+                except: pass
 
-        # Step 4: Parse standard HTML tables (if rendered SSR or returned as raw HTML by AJAX)
+        # 3. Parse any raw HTML tables we gathered
         soup = BeautifulSoup(html_content, "html.parser")
         for table in soup.find_all("table"):
-            table_text = table.get_text().lower()
-            if "course code" in table_text and "question paper" in table_text:
+            headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
+            if any("course code" in h for h in headers) and any("question paper" in h for h in headers):
                 for tr in table.find_all("tr")[1:]:
-                    cols = tr.find_all(["td", "th"])
+                    cols = tr.find_all("td")
                     if len(cols) >= 5:
                         c_code = cols[1].get_text(strip=True)
                         c_name = cols[2].get_text(strip=True)
                         c_date = cols[3].get_text(strip=True)
                         
-                        qp_html = str(cols[4])
-                        sol_html = str(cols[5]) if len(cols) > 5 else ""
-                        
-                        qp_link = extract_link(qp_html)
-                        sol_link = extract_link(sol_html)
-                        
-                        if c_code and c_code.lower() != "course code" and (qp_link or sol_link):
-                            data.append({
-                                "course_code": c_code, "course_name": c_name, "date": c_date,
-                                "qp_link": qp_link, "sol_link": sol_link
-                            })
+                        parsed = extract_row(c_code, c_name, c_date, str(cols[4]), str(cols[5]) if len(cols)>5 else "")
+                        if parsed: data.append(parsed)
 
-        # Remove Duplicates
+        # 4. Deduplicate results
         unique_data = []
         seen_codes = set()
         for d in data:
@@ -691,33 +674,7 @@ def scrape_qp_data(session, select_name, exam_code):
                 seen_codes.add(d['course_code'])
                 unique_data.append(d)
 
-        if unique_data: return {"ok": True, "records": unique_data}
-
-        # Step 5: ULTIMATE FALLBACK - Blanket Regex scan for ANY s3 PDF link on the page
-        pdf_links = set(re.findall(r'(https://iare-data\.s3[^\s"\'<>]*\.pdf)', html_content, re.IGNORECASE))
-        win_links = re.findall(r"window\.open\(['\"]([^'\"]+\.pdf)['\"]", html_content, re.IGNORECASE)
-        for l in win_links:
-            if l.startswith('http'): pdf_links.add(l)
-            else: pdf_links.add(BASE + '/' + l.lstrip('/'))
-
-        grouped = {}
-        for link in pdf_links:
-            name = link.split('/')[-1].replace('.pdf', '')
-            base_name = name.replace('_qp', '').replace('_sol', '').replace('_key', '')
-            if base_name not in grouped: grouped[base_name] = {'qp': None, 'sol': None}
-            
-            if 'sol' in name.lower() or 'key' in name.lower(): grouped[base_name]['sol'] = link
-            else: grouped[base_name]['qp'] = link
-                
-        for base_name, links in grouped.items():
-            data.append({
-                "course_code": base_name.upper()[:10],
-                "course_name": f"Paper: {base_name}",
-                "date": "Available",
-                "qp_link": links['qp'], "sol_link": links['sol']
-            })
-            
-        return {"ok": True, "records": data}
+        return {"ok": True, "records": unique_data}
     except SessionExpiredError:
         raise
     except Exception as e:
