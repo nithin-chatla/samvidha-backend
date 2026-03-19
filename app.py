@@ -516,7 +516,7 @@ def scrape_timetable(session, ay=None, section=None):
         return {"ok": False, "error": str(e), "ays": [], "sections": [], "schedule": [], "subjects": []}
 
 def scrape_qp_init(session):
-    actions = ["qp_and_solution", "qp_and_solutions", "question_paper", "qp_scheme"]
+    actions = ["qp_scheme", "qp_and_solution", "qp_and_solutions", "question_paper"]
     for act in actions:
         try:
             r = session.get(BASE + f"/home?action={act}", timeout=10)
@@ -554,10 +554,9 @@ def scrape_qp_data(session, select_name, exam_code):
         def extract_link(html_str):
             if not html_str: return None
             html_upper = html_str.upper()
-            # Strict check for missing files
             if 'NOT-UPLOADED' in html_upper or 'NOT UPLOADED' in html_upper: return None
             
-            # 1. Direct anchor tag extraction
+            # Direct anchor tag extraction
             soup_cell = BeautifulSoup(html_str, 'html.parser')
             a = soup_cell.find('a', href=True)
             if a:
@@ -566,11 +565,11 @@ def scrape_qp_data(session, select_name, exam_code):
                     if not link.startswith('http'): link = BASE + '/' + link.lstrip('/')
                     return link
                     
-            # 2. Raw AWS S3 link extraction
+            # Raw AWS S3 link extraction
             s3_m = re.search(r'(https://iare-data\.s3[^\s"\'<>]*\.pdf)', html_str, re.IGNORECASE)
             if s3_m: return s3_m.group(1)
             
-            # 3. JavaScript window.open popup link extraction
+            # JavaScript window.open popup link extraction
             win_m = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", html_str, re.IGNORECASE)
             if win_m:
                 link = win_m.group(1)
@@ -596,22 +595,64 @@ def scrape_qp_data(session, select_name, exam_code):
                 })
                 seen_codes.add(c_code)
 
-        # Base actions for IARE
-        actions = ["qp_and_solution", "qp_and_solutions", "question_paper", "qp_scheme"]
-        
-        # --- 1. Scrape Initial Pages ---
-        for act in actions:
+        # 1. Grab required hidden inputs (like dept_id) from the main Question Paper page
+        base_urls = [BASE + "/home?action=qp_scheme", BASE + "/home?action=qp_and_solution"]
+        hidden_payload = {}
+        for burl in base_urls:
             try:
-                payload = {
-                    select_name: exam_code, "exam_code": exam_code, "examCode": exam_code, 
-                    "action": act, "submit": "show", "btnSubmit": "show", "show": "show"
-                }
-                r = session.post(BASE + f"/home?action={act}", data=payload, timeout=8)
-                html_content += r.text
+                r_base = session.get(burl, timeout=10)
+                soup_base = BeautifulSoup(r_base.text, 'html.parser')
+                for inp in soup_base.find_all('input', type='hidden'):
+                    if inp.get('name') and inp.get('value'):
+                        hidden_payload[inp.get('name')] = inp.get('value')
+                if 'dept_id' in hidden_payload:
+                    break 
             except: pass
 
-        # --- 2. Scrape Hidden AJAX Endpoints ---
+        dept_id = hidden_payload.get('dept_id', '')
+
+        headers = {
+            'x-requested-with': 'XMLHttpRequest',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+        }
+
+        # 2. EXACT Match for the Network Payload provided in the screenshot
+        primary_ajax_url = BASE + "/pages/student/qp_scheme/ajax/qp_scheme.php"
+        primary_payload = {
+            "exam_code": exam_code,
+            "dept_id": dept_id,
+            "action": "get_qp_scheme_list"
+        }
+        # Merge any other hidden payload values (CSRF tokens)
+        for k, v in hidden_payload.items():
+            if k not in primary_payload:
+                primary_payload[k] = v
+
+        try:
+            r_ajax = session.post(primary_ajax_url, data=primary_payload, headers=headers, timeout=10)
+            if r_ajax.status_code == 200:
+                if "{" in r_ajax.text:
+                    try:
+                        j = r_ajax.json()
+                        if 'data' in j:
+                            for row in j['data']:
+                                if isinstance(row, list) and len(row) >= 6:
+                                    add_record(
+                                        BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
+                                        BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True),
+                                        BeautifulSoup(str(row[3]), 'html.parser').get_text(strip=True),
+                                        str(row[4]), str(row[5])
+                                    )
+                    except: pass
+                # Save html_content in case it returned raw HTML rows
+                html_content += r_ajax.text
+        except: pass
+
+        if data: return {"ok": True, "records": data}
+
+        # 3. If that failed, fall back to aggressive multi-endpoint scan
         ajax_endpoints = [
+            "/pages/student/qp_scheme/ajax/qp_scheme.php",
             "/pages/student/qp_and_solution/ajax/get_data.php",
             "/pages/student/qp_and_solutions/ajax/get_data.php",
             "/pages/student/question_paper/ajax/get_data.php",
@@ -619,65 +660,51 @@ def scrape_qp_data(session, select_name, exam_code):
             "/pages/student/qp_scheme/ajax/qp_scheme_data.php",
             "/pages/student/question_paper/ajax/qp.php"
         ]
-        for endpoint in ajax_endpoints:
-            try:
-                payload = {
-                    select_name: exam_code, "exam_code": exam_code, "examCode": exam_code,
-                    "action": "get_data", "draw": "1", "start": "0", "length": "100"
-                }
-                r = session.post(BASE + endpoint, data=payload, headers={'x-requested-with': 'XMLHttpRequest'}, timeout=8)
-                if r.status_code == 200:
-                    if "{" in r.text and "data" in r.text:
-                        try:
-                            # Try parsing DataTables JSON standard format
-                            j = r.json()
-                            if 'data' in j:
-                                for row in j['data']:
-                                    if isinstance(row, list) and len(row) >= 6:
-                                        add_record(
-                                            BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
-                                            BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True),
-                                            BeautifulSoup(str(row[3]), 'html.parser').get_text(strip=True),
-                                            str(row[4]), str(row[5])
-                                        )
-                        except: pass
-                    # Append raw AJAX HTML so BeautifulSoup can parse it later
-                    html_content += r.text
-            except: pass
-
-        # --- 3. UNIVERSAL HTML PARSER (The exact fix for the screenshot provided) ---
-        soup = BeautifulSoup(html_content, "html.parser")
         
-        # We completely ignore table headers. Instead, we scan EVERY row on the page.
-        # If the row has 6+ columns, and the FIRST column is a digit (e.g. 1, 2), it's a valid row!
+        for endpoint in ajax_endpoints:
+            for action_val in ['get_qp_scheme_list', 'get_data', 'show_data', 'get_qp_data', 'get_scheme', '']:
+                try:
+                    payload = {
+                        select_name: exam_code, "exam_code": exam_code, "examCode": exam_code,
+                        "dept_id": dept_id, "action": action_val,
+                        "draw": "1", "start": "0", "length": "100"
+                    }
+                    for k, v in hidden_payload.items():
+                        if k not in payload: payload[k] = v
+                        
+                    r2 = session.post(BASE + endpoint, data=payload, headers=headers, timeout=8)
+                    if r2.status_code == 200:
+                        if "{" in r2.text and "data" in r2.text:
+                            try:
+                                j = r2.json()
+                                if 'data' in j:
+                                    for row in j['data']:
+                                        if isinstance(row, list) and len(row) >= 6:
+                                            add_record(
+                                                BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
+                                                BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True),
+                                                BeautifulSoup(str(row[3]), 'html.parser').get_text(strip=True),
+                                                str(row[4]), str(row[5])
+                                            )
+                                    if data: return {"ok": True, "records": data}
+                            except: pass
+                        html_content += r2.text
+                except: pass
+
+        # 4. Parse all accumulated HTML (for standard <tr> responses as seen in the elements screenshot)
+        soup = BeautifulSoup(html_content, "html.parser")
         for tr in soup.find_all("tr"):
-            cols = tr.find_all("td")
+            cols = tr.find_all(["td", "th"])
             if len(cols) >= 6:
                 s_no_cell = cols[0].get_text(strip=True)
                 if s_no_cell.isdigit():
                     add_record(
-                        cols[1].get_text(strip=True),  # Course Code
-                        cols[2].get_text(strip=True),  # Course Name
-                        cols[3].get_text(strip=True),  # Date
-                        str(cols[4]),                  # Question Paper Cell HTML
-                        str(cols[5])                   # Solutions Cell HTML
+                        cols[1].get_text(strip=True),
+                        cols[2].get_text(strip=True),
+                        cols[3].get_text(strip=True),
+                        str(cols[4]), str(cols[5])
                     )
         
-        # --- 4. Fallback: Parse dynamically embedded JSON arrays ---
-        js_matches = re.findall(r'var\s+dataSet\s*=\s*(\[\[.*?\]\]);', html_content, re.DOTALL)
-        for js_str in js_matches:
-            try:
-                rows = json.loads(js_str)
-                for row in rows:
-                    if isinstance(row, list) and len(row) >= 6:
-                        add_record(
-                            BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
-                            BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True),
-                            BeautifulSoup(str(row[3]), 'html.parser').get_text(strip=True),
-                            str(row[4]), str(row[5])
-                        )
-            except: pass
-
         return {"ok": True, "records": data}
     except SessionExpiredError:
         raise
