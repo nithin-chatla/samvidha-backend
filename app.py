@@ -551,40 +551,41 @@ def scrape_qp_data(session, select_name, exam_code):
         seen_codes = set()
         html_content = ""
 
-        # Helper to extract actual AWS S3 PDF Links from DataTables rows or raw HTML
-        def extract_link(html_str):
-            if not html_str: return None
-            html_upper = html_str.upper()
-            if 'NOT-UPLOADED' in html_upper or 'NOT UPLOADED' in html_upper: return None
+        def extract_from_mixed(content):
+            if not content: return None
+            content_str = str(content).strip()
+            if not content_str or 'NOT-UPLOADED' in content_str.upper() or 'NOT UPLOADED' in content_str.upper():
+                return None
             
-            # Direct anchor tag extraction
-            soup_cell = BeautifulSoup(html_str, 'html.parser')
+            # If it's directly a URL (from JSON response)
+            if content_str.startswith('http'):
+                return content_str.replace('\\/', '/')
+            
+            # If it's HTML (fallback parser)
+            soup_cell = BeautifulSoup(content_str, 'html.parser')
             a = soup_cell.find('a', href=True)
-            if a:
+            if a and not a['href'].startswith('#') and 'javascript' not in a['href'].lower():
                 link = a['href']
-                if link and link != '#' and 'javascript' not in link.lower():
-                    if not link.startswith('http'): link = BASE + '/' + link.lstrip('/')
-                    return link
+                if not link.startswith('http'): link = BASE + '/' + link.lstrip('/')
+                return link.replace('\\/', '/')
                     
-            # Raw AWS S3 link extraction
-            s3_m = re.search(r'(https://iare-data\.s3[^\s"\'<>]*\.pdf)', html_str, re.IGNORECASE)
-            if s3_m: return s3_m.group(1)
+            s3_m = re.search(r'(https://iare-data\.s3[^\s"\'<>]*\.pdf)', content_str, re.IGNORECASE)
+            if s3_m: return s3_m.group(1).replace('\\/', '/')
             
-            # JavaScript window.open popup link extraction
-            win_m = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", html_str, re.IGNORECASE)
+            win_m = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", content_str, re.IGNORECASE)
             if win_m:
                 link = win_m.group(1)
                 if not link.startswith('http'): link = BASE + '/' + link.lstrip('/')
-                return link
+                return link.replace('\\/', '/')
 
             return None
 
-        def add_record(c_code, c_name, c_date, qp_html, sol_html):
+        def add_record(c_code, c_name, c_date, qp_raw, sol_raw):
             if not c_code or c_code.lower() in ["n/a", "course code"]: return
             if c_code in seen_codes: return
             
-            qp_link = extract_link(qp_html)
-            sol_link = extract_link(sol_html)
+            qp_link = extract_from_mixed(qp_raw)
+            sol_link = extract_from_mixed(sol_raw)
             
             if qp_link or sol_link:
                 data.append({
@@ -614,16 +615,19 @@ def scrape_qp_data(session, select_name, exam_code):
 
         headers = {
             'x-requested-with': 'XMLHttpRequest',
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'Referer': BASE + "/home?action=qp_scheme"
         }
 
         # 2. EXACT Match for the Network Payload provided in the screenshot
-        primary_ajax_url = BASE + "/pages/student/qp_scheme/ajax/qp_scheme.php"
+        # The screenshot explicitly shows the path /pages/student/exam_result/ajax/qp_scheme.php
+        primary_ajax_url = BASE + "/pages/student/exam_result/ajax/qp_scheme.php"
         primary_payload = {
             "exam_code": exam_code,
             "dept_id": dept_id,
             "action": "get_qp_scheme_list"
         }
+        
         # Merge any other hidden payload values (CSRF tokens)
         for k, v in hidden_payload.items():
             if k not in primary_payload:
@@ -637,27 +641,16 @@ def scrape_qp_data(session, select_name, exam_code):
                         j = r_ajax.json()
                         if 'data' in j:
                             for row in j['data']:
-                                # Based on user payload JSON structure (List of Dictionaries instead of List of Lists)
+                                # Handing pure JSON dictionary array shown in user screenshot
                                 if isinstance(row, dict):
-                                    c_code = row.get('sub_code', '').strip()
-                                    c_name = row.get('sub_title', '').strip()
-                                    c_date = row.get('exam_date', '').strip()
-                                    qp_link = row.get('qp', '').strip()
-                                    sol_link = row.get('scheme', '').strip()
-                                    
-                                    if qp_link and not qp_link.startswith('http'): qp_link = BASE + '/' + qp_link.lstrip('/')
-                                    if sol_link and not sol_link.startswith('http'): sol_link = BASE + '/' + sol_link.lstrip('/')
-                                    
-                                    if c_code and (qp_link or sol_link):
-                                        data.append({
-                                            "course_code": c_code,
-                                            "course_name": c_name,
-                                            "date": c_date,
-                                            "qp_link": qp_link if qp_link else None,
-                                            "sol_link": sol_link if sol_link else None
-                                        })
-                                        seen_codes.add(c_code)
-                                # Fallback for List of Lists structure
+                                    add_record(
+                                        row.get('sub_code', '').strip(),
+                                        row.get('sub_title', '').strip(),
+                                        row.get('exam_date', '').strip(),
+                                        row.get('qp', ''),
+                                        row.get('scheme', '')
+                                    )
+                                # Fallback if returned as a list array inside the JSON data block
                                 elif isinstance(row, list) and len(row) >= 6:
                                     add_record(
                                         BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
@@ -665,15 +658,19 @@ def scrape_qp_data(session, select_name, exam_code):
                                         BeautifulSoup(str(row[3]), 'html.parser').get_text(strip=True),
                                         str(row[4]), str(row[5])
                                     )
-                    except: pass
-                # Save html_content in case it returned raw HTML rows
+                    except Exception as e: 
+                        print("JSON Parse Error:", e)
+                
+                # We always append to html_content in case it is returning raw HTML
                 html_content += r_ajax.text
         except: pass
 
+        # Return early if primary attempt hit correctly and found records
         if data: return {"ok": True, "records": data}
 
-        # 3. If that failed, fall back to aggressive multi-endpoint scan
+        # 3. If that failed, fall back to aggressive multi-endpoint scan including the new exam_result path
         ajax_endpoints = [
+            "/pages/student/exam_result/ajax/qp_scheme.php", 
             "/pages/student/qp_scheme/ajax/qp_scheme.php",
             "/pages/student/qp_and_solution/ajax/get_data.php",
             "/pages/student/qp_and_solutions/ajax/get_data.php",
@@ -702,24 +699,13 @@ def scrape_qp_data(session, select_name, exam_code):
                                 if 'data' in j:
                                     for row in j['data']:
                                         if isinstance(row, dict):
-                                            c_code = row.get('sub_code', '').strip()
-                                            c_name = row.get('sub_title', '').strip()
-                                            c_date = row.get('exam_date', '').strip()
-                                            qp_link = row.get('qp', '').strip()
-                                            sol_link = row.get('scheme', '').strip()
-                                            
-                                            if qp_link and not qp_link.startswith('http'): qp_link = BASE + '/' + qp_link.lstrip('/')
-                                            if sol_link and not sol_link.startswith('http'): sol_link = BASE + '/' + sol_link.lstrip('/')
-                                            
-                                            if c_code and (qp_link or sol_link):
-                                                data.append({
-                                                    "course_code": c_code,
-                                                    "course_name": c_name,
-                                                    "date": c_date,
-                                                    "qp_link": qp_link if qp_link else None,
-                                                    "sol_link": sol_link if sol_link else None
-                                                })
-                                                seen_codes.add(c_code)
+                                            add_record(
+                                                row.get('sub_code', '').strip(),
+                                                row.get('sub_title', '').strip(),
+                                                row.get('exam_date', '').strip(),
+                                                row.get('qp', ''),
+                                                row.get('scheme', '')
+                                            )
                                         elif isinstance(row, list) and len(row) >= 6:
                                             add_record(
                                                 BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
@@ -732,7 +718,7 @@ def scrape_qp_data(session, select_name, exam_code):
                         html_content += r2.text
                 except: pass
 
-        # 4. Parse all accumulated HTML (for standard <tr> responses as seen in the elements screenshot)
+        # 4. Parse all accumulated HTML (for standard <tr> responses as seen in elements screenshot)
         soup = BeautifulSoup(html_content, "html.parser")
         for tr in soup.find_all("tr"):
             cols = tr.find_all(["td", "th"])
