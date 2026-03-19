@@ -525,6 +525,9 @@ def scrape_qp_init(session):
             options = []
             select_name = "exam_code"
             
+            def roman_to_int(roman):
+                return {'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5, 'VI': 6, 'VII': 7, 'VIII': 8}.get(roman, 0)
+            
             for select in soup.find_all('select'):
                 opts = select.find_all('option')
                 if len(opts) > 1:
@@ -533,11 +536,22 @@ def scrape_qp_init(session):
                         val = opt.get('value', '').strip()
                         text = opt.get_text(strip=True)
                         if val and val != "0" and "Select" not in text:
-                            options.append({"value": val, "label": text})
+                            sem_match = re.search(r'\b(I|II|III|IV|V|VI|VII|VIII)\s+SEMESTER\b', text.upper())
+                            sem_val = roman_to_int(sem_match.group(1)) if sem_match else 0
+                            is_see = 1 if "SEE" in text.upper() else 0
+                            options.append({
+                                "value": val, 
+                                "label": text,
+                                "sem_val": sem_val,
+                                "is_see": is_see
+                            })
                     break
             
             if options:
-                return {"ok": True, "options": options, "select_name": select_name, "action_used": act}
+                # Beautifully sort by Semester (Descending), SEE before CIE, and Alphabetical
+                options.sort(key=lambda x: (x['sem_val'], x['is_see'], x['label']), reverse=True)
+                clean_options = [{"value": o["value"], "label": o["label"]} for o in options]
+                return {"ok": True, "options": clean_options, "select_name": select_name, "action_used": act}
         except SessionExpiredError:
             raise
         except:
@@ -551,7 +565,6 @@ def scrape_qp_data(session, select_name, exam_code):
         seen_codes = set()
         html_content = ""
 
-        # Function to clean and extract exact PDF links from raw JSON responses or HTML
         def extract_from_mixed(content):
             if not content: return None
             content_str = str(content).strip()
