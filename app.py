@@ -544,57 +544,98 @@ def scrape_qp_data(session, select_name, exam_code):
         r = session.post(BASE + "/home?action=qp_scheme", data=payload, timeout=15)
         check_auth(r)
         
-        if "Course Code" not in r.text:
-            ajax_urls = [
-                BASE + "/pages/student/qp_scheme/ajax/qp_scheme.php",
-                BASE + "/pages/student/question_paper/ajax/qp.php"
-            ]
-            ajax_match = re.search(r'url\s*:\s*["\']([^"\']+\.php)["\']', r.text)
-            if ajax_match:
-                url = ajax_match.group(1)
-                ajax_urls.insert(0, BASE + '/' + url.lstrip('/') if not url.startswith('http') else url)
+        html_content = r.text
+        
+        # Super Robust Regex Scraper to find AWS S3 PDF Links inside AJAX responses
+        ajax_urls = [
+            BASE + "/pages/student/qp_scheme/ajax/qp_scheme.php",
+            BASE + "/pages/student/question_paper/ajax/qp.php",
+            BASE + "/pages/student/qp/ajax/qp.php"
+        ]
+        
+        ajax_matches = re.findall(r'url\s*:\s*["\']([^"\']+\.php)["\']', r.text)
+        for url in ajax_matches:
+            clean_url = BASE + '/' + url.lstrip('/') if not url.startswith('http') else url
+            if clean_url not in ajax_urls:
+                ajax_urls.insert(0, clean_url)
                 
-            for url in ajax_urls:
-                for action in ['get_data', 'get_qp_data', 'show_data']:
-                    try:
-                        r2 = session.post(url, data={select_name: exam_code, 'action': action}, headers={'x-requested-with': 'XMLHttpRequest'}, timeout=10)
-                        if "Course Code" in r2.text:
-                            r = r2
-                            break
-                    except: pass
-                if "Course Code" in r.text: break
+        for url in ajax_urls:
+            for action in ['get_data', 'get_qp_data', 'show_data', 'get_scheme']:
+                try:
+                    r2 = session.post(url, data={select_name: exam_code, 'action': action}, headers={'x-requested-with': 'XMLHttpRequest'}, timeout=10)
+                    if ".pdf" in r2.text.lower() or "course" in r2.text.lower():
+                        html_content += r2.text
+                except: pass
 
-        soup = BeautifulSoup(r.text, "html.parser")
+        soup = BeautifulSoup(html_content, "html.parser")
         data = []
+        
+        # Attempt standard table parsing
         for table in soup.find_all("table"):
-            if "Course Name" in table.get_text() and "Question Paper" in table.get_text():
+            if "course" in table.get_text().lower() and ("paper" in table.get_text().lower() or "pdf" in table.get_text().lower()):
                 for tr in table.find_all("tr")[1:]:
                     cols = tr.find_all(["td", "th"])
-                    if len(cols) >= 6 and cols[0].get_text(strip=True).isdigit():
-                        def extract_link(td):
-                            a = td.find('a', href=True)
-                            if a and a['href'] != '#' and 'javascript' not in a['href'].lower():
-                                return a['href']
-                            btn = td.find(['button', 'a'], onclick=True)
-                            if btn:
-                                m = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", btn['onclick'])
-                                if m: return m.group(1)
-                            return None
-
-                        qp_link = extract_link(cols[4])
-                        sol_link = extract_link(cols[5])
+                    if len(cols) >= 3:
+                        qp_link = None
+                        sol_link = None
                         
-                        if qp_link and not qp_link.startswith('http'): qp_link = BASE + '/' + qp_link.lstrip('/')
-                        if sol_link and not sol_link.startswith('http'): sol_link = BASE + '/' + sol_link.lstrip('/')
+                        for td in cols:
+                            a = td.find('a', href=True)
+                            if a and '.pdf' in a['href'].lower():
+                                link = a['href']
+                                if not link.startswith('http'): link = BASE + '/' + link.lstrip('/')
+                                if 'sol' in td.get_text().lower() or 'sol' in link.lower(): sol_link = link
+                                else: qp_link = link
+                            elif td.find(['button', 'a'], onclick=True):
+                                btn = td.find(['button', 'a'], onclick=True)
+                                m = re.search(r"window\.open\(['\"]([^'\"]+\.pdf)['\"]", btn['onclick'], re.IGNORECASE)
+                                if m:
+                                    link = m.group(1)
+                                    if not link.startswith('http'): link = BASE + '/' + link.lstrip('/')
+                                    if 'sol' in btn.get_text().lower() or 'sol' in link.lower(): sol_link = link
+                                    else: qp_link = link
 
-                        data.append({
-                            "course_code": cols[1].get_text(strip=True),
-                            "course_name": cols[2].get_text(strip=True),
-                            "date": cols[3].get_text(strip=True),
-                            "qp_link": qp_link,
-                            "sol_link": sol_link
-                        })
-                break
+                        if qp_link or sol_link:
+                            data.append({
+                                "course_code": cols[1].get_text(strip=True) if len(cols)>1 else "N/A",
+                                "course_name": cols[2].get_text(strip=True) if len(cols)>2 else "Question Paper",
+                                "date": cols[3].get_text(strip=True) if len(cols)>3 else "Available",
+                                "qp_link": qp_link,
+                                "sol_link": sol_link
+                            })
+        
+        # 🚨 FALLBACK: Deep Regex Search for ANY PDF link in the raw HTML 🚨
+        if not data:
+            pdf_links = set(re.findall(r'(https://iare-data\.s3[^\s"\'<>]*\.pdf)', html_content, re.IGNORECASE))
+            
+            href_links = re.findall(r'href=["\']([^"\']+\.pdf)["\']', html_content, re.IGNORECASE)
+            for l in href_links:
+                if l.startswith('http'): pdf_links.add(l)
+                else: pdf_links.add(BASE + '/' + l.lstrip('/'))
+                
+            win_links = re.findall(r"window\.open\(['\"]([^'\"]+\.pdf)['\"]", html_content, re.IGNORECASE)
+            for l in win_links:
+                if l.startswith('http'): pdf_links.add(l)
+                else: pdf_links.add(BASE + '/' + l.lstrip('/'))
+
+            grouped = {}
+            for link in pdf_links:
+                name = link.split('/')[-1].replace('.pdf', '')
+                base_name = name.replace('_qp', '').replace('_sol', '').replace('_key', '')
+                if base_name not in grouped: grouped[base_name] = {'qp': None, 'sol': None}
+                
+                if 'sol' in name.lower() or 'key' in name.lower(): grouped[base_name]['sol'] = link
+                else: grouped[base_name]['qp'] = link
+                    
+            for base_name, links in grouped.items():
+                data.append({
+                    "course_code": base_name.upper()[:10],
+                    "course_name": f"Paper: {base_name}",
+                    "date": "Available",
+                    "qp_link": links['qp'],
+                    "sol_link": links['sol']
+                })
+                
         return {"ok": True, "records": data}
     except SessionExpiredError:
         raise
