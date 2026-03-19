@@ -546,11 +546,12 @@ def scrape_qp_data(session, select_name, exam_code):
         
         html_content = r.text
         
-        # Super Robust Regex Scraper to find AWS S3 PDF Links inside AJAX responses
+        # 1. Scrape AJAX endpoints aggressively
         ajax_urls = [
             BASE + "/pages/student/qp_scheme/ajax/qp_scheme.php",
             BASE + "/pages/student/question_paper/ajax/qp.php",
-            BASE + "/pages/student/qp/ajax/qp.php"
+            BASE + "/pages/student/qp/ajax/qp.php",
+            BASE + "/pages/student/qp_scheme/ajax/get_data.php"
         ]
         
         ajax_matches = re.findall(r'url\s*:\s*["\']([^"\']+\.php)["\']', r.text)
@@ -560,51 +561,63 @@ def scrape_qp_data(session, select_name, exam_code):
                 ajax_urls.insert(0, clean_url)
                 
         for url in ajax_urls:
-            for action in ['get_data', 'get_qp_data', 'show_data', 'get_scheme']:
+            for action in ['get_data', 'get_qp_data', 'show_data', 'get_scheme', '']:
                 try:
-                    r2 = session.post(url, data={select_name: exam_code, 'action': action}, headers={'x-requested-with': 'XMLHttpRequest'}, timeout=10)
-                    if ".pdf" in r2.text.lower() or "course" in r2.text.lower():
+                    ajax_payload = {select_name: exam_code, 'exam_code': exam_code, 'exam': exam_code, 'action': action}
+                    r2 = session.post(url, data=ajax_payload, headers={'x-requested-with': 'XMLHttpRequest'}, timeout=10)
+                    if ".pdf" in r2.text.lower() or "course" in r2.text.lower() or "s3" in r2.text.lower():
                         html_content += r2.text
                 except: pass
 
-        soup = BeautifulSoup(html_content, "html.parser")
         data = []
+        soup = BeautifulSoup(html_content, "html.parser")
         
-        # Attempt standard table parsing
+        # 2. Try parsing structured tables first
         for table in soup.find_all("table"):
-            if "course" in table.get_text().lower() and ("paper" in table.get_text().lower() or "pdf" in table.get_text().lower()):
+            table_text = table.get_text().lower()
+            if "course" in table_text and ("paper" in table_text or "pdf" in table_text or "download" in table_text):
                 for tr in table.find_all("tr")[1:]:
                     cols = tr.find_all(["td", "th"])
                     if len(cols) >= 3:
-                        qp_link = None
-                        sol_link = None
+                        qp_link, sol_link = None, None
                         
+                        course_code = cols[1].get_text(strip=True) if len(cols) > 1 else "N/A"
+                        course_name = cols[2].get_text(strip=True) if len(cols) > 2 else "Question Paper"
+                        date = cols[3].get_text(strip=True) if len(cols) > 3 else "Available"
+
                         for td in cols:
-                            a = td.find('a', href=True)
-                            if a and '.pdf' in a['href'].lower():
+                            td_html = str(td)
+                            
+                            # Standard href links
+                            for a in td.find_all('a', href=True):
                                 link = a['href']
                                 if not link.startswith('http'): link = BASE + '/' + link.lstrip('/')
-                                if 'sol' in td.get_text().lower() or 'sol' in link.lower(): sol_link = link
-                                else: qp_link = link
-                            elif td.find(['button', 'a'], onclick=True):
-                                btn = td.find(['button', 'a'], onclick=True)
-                                m = re.search(r"window\.open\(['\"]([^'\"]+\.pdf)['\"]", btn['onclick'], re.IGNORECASE)
-                                if m:
-                                    link = m.group(1)
-                                    if not link.startswith('http'): link = BASE + '/' + link.lstrip('/')
-                                    if 'sol' in btn.get_text().lower() or 'sol' in link.lower(): sol_link = link
-                                    else: qp_link = link
+                                if 'sol' in td.get_text().lower() or 'sol' in link.lower() or 'key' in link.lower(): sol_link = link
+                                elif '.pdf' in link.lower(): qp_link = link
+
+                            # window.open matches
+                            win_links = re.findall(r"window\.open\(['\"]([^'\"]+\.pdf)['\"]", td_html, re.IGNORECASE)
+                            for link in win_links:
+                                if not link.startswith('http'): link = BASE + '/' + link.lstrip('/')
+                                if 'sol' in td.get_text().lower() or 'sol' in link.lower() or 'key' in link.lower(): sol_link = link
+                                elif '.pdf' in link.lower(): qp_link = link
+                                
+                            # Direct S3 Regex matches (Highly accurate for IARE)
+                            s3_links = re.findall(r'(https://iare-data\.s3[^\s"\'<>]*\.pdf)', td_html, re.IGNORECASE)
+                            for link in s3_links:
+                                if 'sol' in td.get_text().lower() or 'sol' in link.lower() or 'key' in link.lower(): sol_link = link
+                                elif '.pdf' in link.lower(): qp_link = link
 
                         if qp_link or sol_link:
                             data.append({
-                                "course_code": cols[1].get_text(strip=True) if len(cols)>1 else "N/A",
-                                "course_name": cols[2].get_text(strip=True) if len(cols)>2 else "Question Paper",
-                                "date": cols[3].get_text(strip=True) if len(cols)>3 else "Available",
+                                "course_code": course_code,
+                                "course_name": course_name,
+                                "date": date,
                                 "qp_link": qp_link,
                                 "sol_link": sol_link
                             })
         
-        # 🚨 FALLBACK: Deep Regex Search for ANY PDF link in the raw HTML 🚨
+        # 3. ULTRA AGGRESSIVE FALLBACK: Deep scrape raw HTML for any PDF links
         if not data:
             pdf_links = set(re.findall(r'(https://iare-data\.s3[^\s"\'<>]*\.pdf)', html_content, re.IGNORECASE))
             
