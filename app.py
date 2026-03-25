@@ -9,6 +9,10 @@ import time
 import re
 import io
 import json
+import threading
+import asyncio
+import aiohttp
+from urllib.parse import urljoin
 
 try:
     import fitz  # PyMuPDF
@@ -25,6 +29,131 @@ LOGIN_URL = BASE + "/pages/login/checkUser.php"
 
 TOKENS = {}
 SESSIONS = {}
+
+# ==========================================
+# FACULTY AUTO-SCRAPER (24-HOUR DAEMON)
+# ==========================================
+
+DEPARTMENTS = {
+    "AERO": "https://www.iare.ac.in/?q=departmentlist/26",
+    "IT": "https://www.iare.ac.in/?q=departmentlist/27",
+    "CSE": "https://www.iare.ac.in/?q=departmentlist/28",
+    "ECE": "https://www.iare.ac.in/?q=departmentlist/29",
+    "EEE": "https://www.iare.ac.in/?q=departmentlist/30",
+    "MECH": "https://www.iare.ac.in/?q=departmentlist/31",
+    "CIVIL": "https://www.iare.ac.in/?q=departmentlist/32",
+    "CSE(AIML)": "https://www.iare.ac.in/?q=departmentlist/113",
+    "DS": "https://www.iare.ac.in/?q=departmentlist/116"
+}
+
+async def fetch_html_async(session, url, retries=3):
+    for attempt in range(retries):
+        try:
+            async with session.get(url, timeout=20) as response:
+                if response.status == 200:
+                    return await response.text()
+                elif response.status in [403, 404, 500, 502, 503, 504]:
+                    return None
+        except Exception:
+            if attempt == retries - 1:
+                return None
+            await asyncio.sleep(1)
+    return None
+
+async def scrape_department_async(session, dept_name, url):
+    html = await fetch_html_async(session, url)
+    if not html: return []
+    soup = BeautifulSoup(html, "html.parser")
+    profile_links = []
+    for a_tag in soup.find_all("a", string=lambda text: text and "View Profile" in text):
+        href = a_tag.get("href")
+        if href:
+            full_link = urljoin("https://www.iare.ac.in/", href)
+            if full_link not in profile_links:
+                profile_links.append(full_link)
+    tasks = [scrape_profile_async(session, link, dept_name) for link in profile_links]
+    faculty_data = await asyncio.gather(*tasks)
+    return [data for data in faculty_data if data]
+
+async def scrape_profile_async(session, profile_url, dept_name):
+    html = await fetch_html_async(session, profile_url)
+    if not html: return None
+    soup = BeautifulSoup(html, "html.parser")
+    faculty_info = {
+        "department_short": dept_name, "profile_url": profile_url, "name": "", "faculty_id": "",
+        "designation": "", "department_full": "", "total_experience": "", "experience_iare": "",
+        "dob": "", "email": "", "employment_status": "", "jntuh_id": "", "aicte_id": "",
+        "ug_degree": "", "pg_degree": "", "phd_degree": "", "specialization": "", "image_url": "", "search_index": []
+    }
+    title_tag = soup.find("h1") or soup.find("h2")
+    if title_tag: faculty_info["name"] = title_tag.text.strip()
+    table = soup.find("table")
+    if table:
+        rows = table.find_all("tr")
+        for row in rows:
+            cols = row.find_all(["td", "th"])
+            if len(cols) >= 2:
+                key = cols[0].text.strip().lower()
+                val = cols[1].text.strip()
+                if "name of the faculty" in key: faculty_info["name"] = val
+                elif "aicte faculty id" in key: faculty_info["aicte_id"] = val
+                elif "faculty id" in key: faculty_info["faculty_id"] = val
+                elif "designation" in key: faculty_info["designation"] = val
+                elif "department" in key: faculty_info["department_full"] = val
+                elif "total experience" in key: faculty_info["total_experience"] = val
+                elif "experience at iare" in key: faculty_info["experience_iare"] = val
+                elif "date of birth" in key: faculty_info["dob"] = val
+                elif "email id" in key: faculty_info["email"] = val
+                elif "employment status" in key: faculty_info["employment_status"] = val
+                elif "jntuh id" in key: faculty_info["jntuh_id"] = val
+                elif "undergraduate" in key: faculty_info["ug_degree"] = val
+                elif "postgraduate" in key: faculty_info["pg_degree"] = val
+                elif "ph.d" in key: faculty_info["phd_degree"] = val
+                elif "specialization" in key: faculty_info["specialization"] = val
+    img_tag = soup.select_one("td img") or soup.select_one(".content img")
+    if img_tag and img_tag.get("src"):
+        faculty_info["image_url"] = urljoin("https://www.iare.ac.in/", img_tag.get("src"))
+    search_string = f"{faculty_info['name']} {faculty_info['department_short']} {faculty_info['designation']} {faculty_info['specialization']}".lower()
+    clean_words = re.findall(r'\w+', search_string)
+    faculty_info['search_index'] = list(set(clean_words))
+    return faculty_info
+
+async def run_async_scraper():
+    print("[BACKGROUND SCRAPER] Starting daily faculty extraction...")
+    all_faculty = []
+    connector = aiohttp.TCPConnector(limit=30)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [scrape_department_async(session, dept, url) for dept, url in DEPARTMENTS.items()]
+        results = await asyncio.gather(*tasks)
+        for dept_faculty in results:
+            all_faculty.extend(dept_faculty)
+    
+    if all_faculty:
+        with open("faculty_data.json", "w", encoding="utf-8") as f:
+            json.dump(all_faculty, f, indent=4, ensure_ascii=False)
+        print(f"[BACKGROUND SCRAPER] Successfully updated faculty_data.json with {len(all_faculty)} profiles.")
+
+def schedule_daily_scrape():
+    """Runs the scraper immediately on boot (optional) and then every 24 hours."""
+    while True:
+        # Sleep for 24 hours (86400 seconds) before running the first automated scrape
+        # If you want it to scrape immediately on server start, move this to the bottom of the loop.
+        time.sleep(86400)
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(run_async_scraper())
+            loop.close()
+        except Exception as e:
+            print(f"[BACKGROUND SCRAPER] Error: {e}")
+
+# Start the background daemon thread when the app initializes
+scraper_thread = threading.Thread(target=schedule_daily_scrape, daemon=True)
+scraper_thread.start()
+
+# ==========================================
+# SAMVIDHA PORTAL APIs
+# ==========================================
 
 class SessionExpiredError(Exception): pass
 
@@ -156,7 +285,7 @@ def scrape_midmarks(session):
             if len(cols) >= 10 and current_mode == "theory" and cols[0].get_text(strip=True).isdigit():
                 theory_data.append({
                     "Semester": current_sem, 
-                    "Course Code": cols[1].get_text(strip=True), # ADDED COURSE CODE SCRAPING
+                    "Course Code": cols[1].get_text(strip=True), 
                     "Course Name": cols[2].get_text(strip=True),
                     "CIE-I": cols[3].get_text(strip=True), "AAT:I-I": cols[4].get_text(strip=True),
                     "AAT:I-II": cols[5].get_text(strip=True), "CIE-II": cols[6].get_text(strip=True),
@@ -167,7 +296,7 @@ def scrape_midmarks(session):
                 week_marks = [cols[i].get_text(strip=True) for i in range(3, len(cols) - 2) if cols[i].get_text(strip=True)]
                 lab_data.append({
                     "Semester": current_sem, 
-                    "Course Code": cols[1].get_text(strip=True), # ADDED COURSE CODE SCRAPING
+                    "Course Code": cols[1].get_text(strip=True), 
                     "Course Name": cols[2].get_text(strip=True),
                     "Weeks": week_marks, "Marks": cols[-1].get_text(strip=True)
                 })
@@ -769,9 +898,9 @@ def require_token():
 @app.route("/check_update", methods=["GET"])
 def check_update():
     return jsonify({
-        "version": "5.2.0", 
-        "build_number": 5, 
-        "download_url": "https://drive.google.com/file/d/1FVLK5qBpaIUeol01UQtBwUDlaRBBr25H/view?usp=sharing"
+        "version": "4.0", 
+        "build_number": 4, 
+        "download_url": "https://paste-your-google-drive-link-here.com"
     })
 
 @app.route("/login", methods=["POST"])
@@ -824,6 +953,16 @@ def api_qp_data():
     token = require_token()
     data = request.get_json() or {}
     return jsonify(scrape_qp_data(SESSIONS[token], data.get("select_name", "exam_code"), data.get("exam_code")))
+
+@app.route("/faculty", methods=["GET"])
+def api_faculty():
+    token = require_token()
+    try:
+        with open("faculty_data.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return jsonify({"ok": True, "faculty": data})
+    except Exception as e:
+        return jsonify({"ok": False, "error": "Faculty data not found on server."})
 
 @app.route("/all", methods=["GET"])
 def api_all():
