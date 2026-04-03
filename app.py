@@ -259,18 +259,45 @@ def scrape_course_content(session):
             return {"records": []}
 
         course_rows = []
+        current_subject = ""
+
         for tr in table.find_all("tr"):
-            cols = tr.find_all("td")
-            if len(cols) < 3:
+            cols = tr.find_all(["td", "th"])
+            if not cols:
                 continue
 
-            date_text = cols[0].get_text(strip=True)
-            period_text = cols[1].get_text(strip=True)
-            topic_text = cols[2].get_text(strip=True)
-            status_text = cols[3].get_text(strip=True) if len(cols) > 3 else ""
+            # Detect subject header row (colspan or only 1 cell with non-data text)
+            if len(cols) == 1 and cols[0].get_text(strip=True):
+                cell_text = cols[0].get_text(separator=" ", strip=True)
+                cell_lower = cell_text.lower()
+                if "course" in cell_lower or "subject" in cell_lower or re.search(r"[A-Z]{2,}[0-9]{1,}", cell_text) or "-" in cell_text:
+                    current_subject = cell_text
+                    continue
+
+            # Skip table header line
+            first_cell = cols[0].get_text(strip=True)
+            if first_cell.lower() in ["s.no", "sno", "#", "sr.no", "sr no", "sl.no", "sr"]:
+                continue
+
+            # Some rows might have non-numeric row index; treat as potential subject marker
+            # If 2 cols only, might be header/subtitle; interpret as subject and continue
+            if len(cols) == 2 and not first_cell.isdigit():
+                subject_candidate = cols[1].get_text(separator=" ", strip=True)
+                if subject_candidate:
+                    current_subject = subject_candidate
+                continue
+
+            # Extract fields
+            s_no = first_cell
+            date_text = cols[1].get_text(strip=True) if len(cols) > 1 else ""
+            period_text = cols[2].get_text(strip=True) if len(cols) > 2 else ""
+            topic_text = cols[3].get_text(separator=" ", strip=True) if len(cols) > 3 else ""
+            status_text = cols[4].get_text(strip=True) if len(cols) > 4 else ""
 
             pdf_link = ""
             youtube_link = ""
+            extra_links = []
+
             for link in tr.find_all("a", href=True):
                 href = link["href"].strip()
                 full_href = href if href.lower().startswith("http") else urljoin(BASE, href)
@@ -279,14 +306,24 @@ def scrape_course_content(session):
                     pdf_link = full_href
                 if "youtu.be" in low or "youtube.com" in low:
                     youtube_link = full_href
+                extra_links.append({"text": link.get_text(strip=True), "href": full_href})
+
+            # Also collect direct text in powerpoint column when no link exists
+            powerpoint_text = ""
+            if len(cols) > 5:
+                powerpoint_text = cols[5].get_text(strip=True)
 
             course_rows.append({
+                "subject": current_subject,
+                "s_no": s_no,
                 "date": date_text,
                 "period": period_text,
                 "topic": topic_text,
                 "status": status_text,
                 "pdf": pdf_link,
                 "youtube": youtube_link,
+                "powerpoint": powerpoint_text,
+                "links": extra_links
             })
 
         return {"records": course_rows}
