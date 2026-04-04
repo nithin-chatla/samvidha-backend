@@ -187,7 +187,9 @@ def scrape_attendance(session):
     except SessionExpiredError: raise
     except Exception: return {"records": [], "last_date": ""}
 
-# --- RESTORED COURSE CONTENT PARSER ---
+# ==========================================
+# AGGRESSIVE COURSE CONTENT PARSER
+# ==========================================
 def scrape_course_content(session):
     try:
         r = session.get(BASE + "/home", timeout=15)
@@ -224,6 +226,7 @@ def scrape_course_content(session):
             cols = tr.find_all(["td", "th"])
             if not cols: continue
 
+            # Sub-headers (Subject name)
             if len(cols) == 1 and cols[0].get_text(strip=True):
                 cell_text = cols[0].get_text(separator=" ", strip=True)
                 if "course" in cell_text.lower() or "subject" in cell_text.lower() or re.search(r"[A-Z]{2,}[0-9]{1,}", cell_text) or "-" in cell_text:
@@ -246,17 +249,49 @@ def scrape_course_content(session):
 
             pdf_link = ""
             youtube_link = ""
+            powerpoint_text = ""
             extra_links = []
 
-            for link in tr.find_all("a", href=True):
-                href = link["href"].strip()
-                full_href = href if href.lower().startswith("http") else urljoin(BASE, href)
-                low = full_href.lower()
-                if ".pdf" in low: pdf_link = full_href
-                if "youtu.be" in low or "youtube.com" in low: youtube_link = full_href
-                extra_links.append({"text": link.get_text(strip=True), "href": full_href})
+            # AGGRESSIVE URL EXTRACTION (Bypassing BeautifulSoup's strict href rules)
+            row_html = str(tr)
+            
+            # Extract Direct AWS S3 Links
+            s3_match = re.search(r'(https://iare-data\.s3[^\s"\'<>]+(?:\.pdf)?)', row_html, re.IGNORECASE)
+            if s3_match: 
+                pdf_link = s3_match.group(1).replace('\\/', '/')
+            
+            # Extract YouTube Links
+            yt_match = re.search(r'(https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[^\s"\'<>]+)', row_html, re.IGNORECASE)
+            if yt_match: 
+                youtube_link = yt_match.group(1).replace('\\/', '/')
 
-            powerpoint_text = cols[5].get_text(strip=True) if len(cols) > 5 else ""
+            # Extract window.open() popup URLs
+            win_matches = re.findall(r"window\.open\(['\"]([^'\"]+)['\"]", row_html, re.IGNORECASE)
+            for wm in win_matches:
+                clean_wm = wm.replace('\\/', '/')
+                if 'youtube' in clean_wm.lower() or 'youtu.be' in clean_wm.lower():
+                    if not youtube_link: youtube_link = clean_wm
+                else:
+                    if not pdf_link:
+                        pdf_link = clean_wm if clean_wm.startswith('http') else urljoin(BASE, clean_wm)
+
+            # Fallback to normal anchor tags
+            for link in tr.find_all("a", href=True):
+                href = link["href"].strip().replace('\\/', '/')
+                if href and not href.startswith('#') and 'javascript' not in href.lower():
+                    full_href = href if href.lower().startswith("http") else urljoin(BASE, href)
+                    low = full_href.lower()
+                    if ".pdf" in low and not pdf_link: 
+                        pdf_link = full_href
+                    elif ("youtu.be" in low or "youtube.com" in low) and not youtube_link: 
+                        youtube_link = full_href
+                    else: 
+                        extra_links.append({"text": link.get_text(strip=True), "href": full_href})
+
+            if len(cols) > 6 and not pdf_link:
+                ppt_text = cols[6].get_text(strip=True)
+                if ppt_text.lower() not in ["nil", "-", ""]:
+                    powerpoint_text = ppt_text
 
             course_rows.append({
                 "subject": current_subject, "s_no": s_no, "date": date_text, "period": period_text,
@@ -266,7 +301,9 @@ def scrape_course_content(session):
 
         return {"records": course_rows}
     except SessionExpiredError: raise
-    except Exception: return {"records": []}
+    except Exception as e: 
+        print("Course Content Scraper Error:", e)
+        return {"records": []}
 
 def scrape_biometric(session):
     try:
@@ -825,7 +862,7 @@ def api_attendance():
     token = require_token()
     return jsonify({"attendance": scrape_attendance(SESSIONS[token]), "biometric": scrape_biometric(SESSIONS[token])})
 
-# --- ADDED RESTORED COURSE DELIVERY ENDPOINT ---
+# --- ENHANCED COURSE CONTENT ENDPOINT ---
 @app.route("/course_delivery", methods=["GET"])
 def api_course_delivery():
     token = require_token()
