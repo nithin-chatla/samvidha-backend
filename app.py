@@ -221,96 +221,6 @@ def scrape_attendance(session):
     except Exception:
         return {"records": [], "last_date": ""}
 
-def scrape_course_content(session):
-    try:
-        r = session.get(BASE + "/home", timeout=15)
-        check_auth(r)
-        soup = BeautifulSoup(r.text, "html.parser")
-        course_url = None
-        for a_tag in soup.find_all("a", href=True):
-            txt = a_tag.get_text(strip=True).lower()
-            if "course content" in txt or "content delivery" in txt:
-                course_url = a_tag["href"]
-                break
-
-        if not course_url:
-            course_url = BASE + "/home?action=course_content_delivery"
-        elif not course_url.lower().startswith("http"):
-            course_url = urljoin(BASE, course_url)
-
-        r2 = session.get(course_url, timeout=20)
-        check_auth(r2)
-        soup2 = BeautifulSoup(r2.text, "html.parser")
-
-        table = None
-        for candidate in soup2.find_all("table"):
-            headers = [th.get_text(strip=True).lower() for th in candidate.find_all("th")]
-            headers_txt = " ".join(headers)
-            if "date" in headers_txt and "period" in headers_txt:
-                table = candidate
-                break
-
-        if not table: return {"records": []}
-
-        course_rows = []
-        current_subject = ""
-
-        for tr in table.find_all("tr"):
-            cols = tr.find_all(["td", "th"])
-            if not cols: continue
-
-            if len(cols) == 1 and cols[0].get_text(strip=True):
-                cell_text = cols[0].get_text(separator=" ", strip=True)
-                cell_lower = cell_text.lower()
-                if "course" in cell_lower or "subject" in cell_lower or re.search(r"[A-Z]{2,}[0-9]{1,}", cell_text) or "-" in cell_text:
-                    current_subject = cell_text
-                    continue
-
-            first_cell = cols[0].get_text(strip=True)
-            if first_cell.lower() in ["s.no", "sno", "#", "sr.no", "sr no", "sl.no", "sr"]: continue
-
-            if len(cols) == 2 and not first_cell.isdigit():
-                subject_candidate = cols[1].get_text(separator=" ", strip=True)
-                if subject_candidate: current_subject = subject_candidate
-                continue
-
-            s_no = first_cell
-            date_text = cols[1].get_text(strip=True) if len(cols) > 1 else ""
-            period_text = cols[2].get_text(strip=True) if len(cols) > 2 else ""
-            topic_text = cols[3].get_text(separator=" ", strip=True) if len(cols) > 3 else ""
-            status_text = cols[4].get_text(strip=True) if len(cols) > 4 else ""
-
-            pdf_link = ""
-            youtube_link = ""
-            extra_links = []
-
-            for link in tr.find_all("a", href=True):
-                href = link["href"].strip()
-                full_href = href if href.lower().startswith("http") else urljoin(BASE, href)
-                low = full_href.lower()
-                if ".pdf" in low: pdf_link = full_href
-                if "youtu.be" in low or "youtube.com" in low: youtube_link = full_href
-                extra_links.append({"text": link.get_text(strip=True), "href": full_href})
-
-            powerpoint_text = cols[5].get_text(strip=True) if len(cols) > 5 else ""
-
-            course_rows.append({
-                "subject": current_subject,
-                "s_no": s_no,
-                "date": date_text,
-                "period": period_text,
-                "topic": topic_text,
-                "status": status_text,
-                "pdf": pdf_link,
-                "youtube": youtube_link,
-                "powerpoint": powerpoint_text,
-                "links": extra_links
-            })
-
-        return {"records": course_rows}
-    except SessionExpiredError: raise
-    except Exception: return {"records": []}
-
 def scrape_biometric(session):
     try:
         r = session.get(BASE + "/home?action=std_bio", timeout=15)
@@ -933,11 +843,6 @@ def api_profile():
 def api_attendance():
     token = require_token()
     return jsonify({"attendance": scrape_attendance(SESSIONS[token]), "biometric": scrape_biometric(SESSIONS[token])})
-
-@app.route("/course_delivery", methods=["GET"])
-def api_course_delivery():
-    token = require_token()
-    return jsonify({"course_content": scrape_course_content(SESSIONS[token])})
 
 @app.route("/results", methods=["GET"])
 def api_results():
