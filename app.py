@@ -33,7 +33,6 @@ SESSIONS = {}
 # ==========================================
 # FACULTY AUTO-SCRAPER (24-HOUR DAEMON)
 # ==========================================
-
 DEPARTMENTS = {
     "AERO": "https://www.iare.ac.in/?q=departmentlist/26",
     "IT": "https://www.iare.ac.in/?q=departmentlist/27",
@@ -50,13 +49,10 @@ async def fetch_html_async(session, url, retries=3):
     for attempt in range(retries):
         try:
             async with session.get(url, timeout=20) as response:
-                if response.status == 200:
-                    return await response.text()
-                elif response.status in [403, 404, 500, 502, 503, 504]:
-                    return None
+                if response.status == 200: return await response.text()
+                elif response.status in [403, 404, 500, 502, 503, 504]: return None
         except Exception:
-            if attempt == retries - 1:
-                return None
+            if attempt == retries - 1: return None
             await asyncio.sleep(1)
     return None
 
@@ -69,8 +65,7 @@ async def scrape_department_async(session, dept_name, url):
         href = a_tag.get("href")
         if href:
             full_link = urljoin("https://www.iare.ac.in/", href)
-            if full_link not in profile_links:
-                profile_links.append(full_link)
+            if full_link not in profile_links: profile_links.append(full_link)
     tasks = [scrape_profile_async(session, link, dept_name) for link in profile_links]
     faculty_data = await asyncio.gather(*tasks)
     return [data for data in faculty_data if data]
@@ -125,8 +120,7 @@ async def run_async_scraper():
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [scrape_department_async(session, dept, url) for dept, url in DEPARTMENTS.items()]
         results = await asyncio.gather(*tasks)
-        for dept_faculty in results:
-            all_faculty.extend(dept_faculty)
+        for dept_faculty in results: all_faculty.extend(dept_faculty)
     
     if all_faculty:
         with open("faculty_data.json", "w", encoding="utf-8") as f:
@@ -141,8 +135,7 @@ def schedule_daily_scrape():
             asyncio.set_event_loop(loop)
             loop.run_until_complete(run_async_scraper())
             loop.close()
-        except Exception as e:
-            print(f"[BACKGROUND SCRAPER] Error: {e}")
+        except Exception as e: print(f"[BACKGROUND SCRAPER] Error: {e}")
 
 scraper_thread = threading.Thread(target=schedule_daily_scrape, daemon=True)
 scraper_thread.start()
@@ -159,68 +152,42 @@ def handle_session_expired(e):
 
 def check_auth(r):
     url = r.url.lower()
-    if "login" in url or "index.php" in url or "checkuser" in url:
-        raise SessionExpiredError("Session expired")
-    if '<input type="password"' in r.text.lower() or 'name="password"' in r.text.lower():
-        raise SessionExpiredError("Session expired")
+    if "login" in url or "index.php" in url or "checkuser" in url: raise SessionExpiredError("Session expired")
+    if '<input type="password"' in r.text.lower() or 'name="password"' in r.text.lower(): raise SessionExpiredError("Session expired")
 
 def login_session(username, password):
     session = requests.Session()
-    headers = {
-        "Host": "samvidha.iare.ac.in",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Origin": BASE,
-        "Referer": BASE + "/",
-        "X-Requested-With": "XMLHttpRequest",
-    }
-    payload = {"username": username, "password": password}
+    headers = {"Host": "samvidha.iare.ac.in", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json, text/javascript, */*; q=0.01", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Origin": BASE, "Referer": BASE + "/", "X-Requested-With": "XMLHttpRequest"}
     try:
-        res = session.post(LOGIN_URL, data=payload, headers=headers, timeout=20)
-        j = res.json()
-        if j.get("status") == "1":
-            return session, None
+        res = session.post(LOGIN_URL, data={"username": username, "password": password}, headers=headers, timeout=20)
+        if res.json().get("status") == "1": return session, None
         return None, "invalid_credentials"
-    except Exception:
-        return None, "network_error"
+    except Exception: return None, "network_error"
 
 def scrape_attendance(session):
     try:
         r = session.get(BASE + "/home?action=stud_att_STD", timeout=15)
         check_auth(r)
-        
         soup = BeautifulSoup(r.text, "html.parser")
         attendance_data = []
         last_date = ""
-
         for td in soup.find_all(["td", "th"]):
             if "last date of semester" in td.get_text(strip=True).lower():
                 nxt = td.find_next_sibling("td")
-                if nxt:
-                    last_date = nxt.get_text(strip=True)
+                if nxt: last_date = nxt.get_text(strip=True)
                 break
-
         for table in soup.find_all("table"):
             if "Course Name" in table.get_text() and "Attendance %" in table.get_text():
                 for tr in table.find_all("tr"):
                     cols = tr.find_all("td")
                     if len(cols) >= 7 and cols[0].get_text(strip=True).isdigit():
-                        attendance_data.append({
-                            "Subject": cols[2].get_text(strip=True), 
-                            "Course Code": cols[1].get_text(strip=True),
-                            "Conducted": cols[-4].get_text(strip=True),
-                            "Attended": cols[-3].get_text(strip=True),
-                            "Attendance %": cols[-2].get_text(strip=True),
-                            "Status": cols[-1].get_text(strip=True) 
-                        })
+                        attendance_data.append({"Subject": cols[2].get_text(strip=True), "Course Code": cols[1].get_text(strip=True), "Conducted": cols[-4].get_text(strip=True), "Attended": cols[-3].get_text(strip=True), "Attendance %": cols[-2].get_text(strip=True), "Status": cols[-1].get_text(strip=True)})
                 break
         return {"records": attendance_data, "last_date": last_date}
-    except SessionExpiredError:
-        raise
-    except Exception:
-        return {"records": [], "last_date": ""}
+    except SessionExpiredError: raise
+    except Exception: return {"records": [], "last_date": ""}
 
+# --- RESTORED COURSE CONTENT PARSER ---
 def scrape_course_content(session):
     try:
         r = session.get(BASE + "/home", timeout=15)
@@ -233,10 +200,8 @@ def scrape_course_content(session):
                 course_url = a_tag["href"]
                 break
 
-        if not course_url:
-            course_url = BASE + "/home?action=course_content_delivery"
-        elif not course_url.lower().startswith("http"):
-            course_url = urljoin(BASE, course_url)
+        if not course_url: course_url = BASE + "/home?action=course_content_delivery"
+        elif not course_url.lower().startswith("http"): course_url = urljoin(BASE, course_url)
 
         r2 = session.get(course_url, timeout=20)
         check_auth(r2)
@@ -261,8 +226,7 @@ def scrape_course_content(session):
 
             if len(cols) == 1 and cols[0].get_text(strip=True):
                 cell_text = cols[0].get_text(separator=" ", strip=True)
-                cell_lower = cell_text.lower()
-                if "course" in cell_lower or "subject" in cell_lower or re.search(r"[A-Z]{2,}[0-9]{1,}", cell_text) or "-" in cell_text:
+                if "course" in cell_text.lower() or "subject" in cell_text.lower() or re.search(r"[A-Z]{2,}[0-9]{1,}", cell_text) or "-" in cell_text:
                     current_subject = cell_text
                     continue
 
@@ -295,16 +259,9 @@ def scrape_course_content(session):
             powerpoint_text = cols[5].get_text(strip=True) if len(cols) > 5 else ""
 
             course_rows.append({
-                "subject": current_subject,
-                "s_no": s_no,
-                "date": date_text,
-                "period": period_text,
-                "topic": topic_text,
-                "status": status_text,
-                "pdf": pdf_link,
-                "youtube": youtube_link,
-                "powerpoint": powerpoint_text,
-                "links": extra_links
+                "subject": current_subject, "s_no": s_no, "date": date_text, "period": period_text,
+                "topic": topic_text, "status": status_text, "pdf": pdf_link, "youtube": youtube_link,
+                "powerpoint": powerpoint_text, "links": extra_links
             })
 
         return {"records": course_rows}
@@ -315,7 +272,6 @@ def scrape_biometric(session):
     try:
         r = session.get(BASE + "/home?action=std_bio", timeout=15)
         check_auth(r)
-        
         soup = BeautifulSoup(r.text, "html.parser")
         bio_data = []
         for table in soup.find_all("table"):
@@ -330,8 +286,7 @@ def scrape_biometric(session):
                         in_time = cols[4].get_text(strip=True)
                         out_time = cols[5].get_text(strip=True)
                         status = cols[6].get_text(strip=True) if len(cols) > 6 else "-"
-                        if date and date != "-":
-                            bio_data.append({"date": date, "in_time": in_time, "out_time": out_time, "status": status})
+                        if date and date != "-": bio_data.append({"date": date, "in_time": in_time, "out_time": out_time, "status": status})
                 break
         return bio_data
     except SessionExpiredError: raise
@@ -341,7 +296,6 @@ def scrape_midmarks(session):
     try:
         r = session.get(BASE + "/home?action=cie_marks_ug", timeout=15)
         check_auth(r)
-        
         soup = BeautifulSoup(r.text, "html.parser")
         rows = soup.find_all("tr")
         theory_data = []
@@ -356,7 +310,6 @@ def scrape_midmarks(session):
                     if "semester -" in cell.get_text(strip=True).lower():
                         current_sem = cell.get_text(strip=True)
                         break
-                        
             if "continuous internal assessment marks (theory)" in text:
                 current_mode = "theory"
                 continue
@@ -367,9 +320,7 @@ def scrape_midmarks(session):
             cols = row.find_all("td")
             if len(cols) >= 10 and current_mode == "theory" and cols[0].get_text(strip=True).isdigit():
                 theory_data.append({
-                    "Semester": current_sem, 
-                    "Course Code": cols[1].get_text(strip=True), 
-                    "Course Name": cols[2].get_text(strip=True),
+                    "Semester": current_sem, "Course Code": cols[1].get_text(strip=True), "Course Name": cols[2].get_text(strip=True),
                     "CIE-I": cols[3].get_text(strip=True), "AAT:I-I": cols[4].get_text(strip=True),
                     "AAT:I-II": cols[5].get_text(strip=True), "CIE-II": cols[6].get_text(strip=True),
                     "AAT:II-I": cols[7].get_text(strip=True), "AAT:II-II": cols[8].get_text(strip=True),
@@ -377,12 +328,7 @@ def scrape_midmarks(session):
                 })
             elif len(cols) >= 5 and current_mode == "lab" and cols[0].get_text(strip=True).isdigit():
                 week_marks = [cols[i].get_text(strip=True) for i in range(3, len(cols) - 2) if cols[i].get_text(strip=True)]
-                lab_data.append({
-                    "Semester": current_sem, 
-                    "Course Code": cols[1].get_text(strip=True), 
-                    "Course Name": cols[2].get_text(strip=True),
-                    "Weeks": week_marks, "Marks": cols[-1].get_text(strip=True)
-                })
+                lab_data.append({"Semester": current_sem, "Course Code": cols[1].get_text(strip=True), "Course Name": cols[2].get_text(strip=True), "Weeks": week_marks, "Marks": cols[-1].get_text(strip=True)})
         return {"theory": theory_data, "laboratory": lab_data}
     except SessionExpiredError: raise
     except Exception: return {"theory": [], "laboratory": []}
@@ -396,7 +342,6 @@ def scrape_results(session):
             results_data = []
             current_sem_data = None
             overall_cgpa = "N/A"
-            
             rows = soup.find_all('tr')
             for row in rows:
                 text = row.get_text(separator=" ", strip=True).upper()
@@ -467,12 +412,10 @@ def scrape_memos(session, username):
                     row_html = str(tr)
                     href = None
                     pdf_match = re.search(rf'({roll}_\d+\.pdf)', row_html, re.IGNORECASE)
-                    if pdf_match:
-                        href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_match.group(1)}"
+                    if pdf_match: href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_match.group(1)}"
                     else:
                         s3_match = re.search(r'(https://iare-data\.s3[^\s"\'<>]+\.pdf)', row_html, re.IGNORECASE)
-                        if s3_match:
-                            href = s3_match.group(1)
+                        if s3_match: href = s3_match.group(1)
                         else:
                             win_match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", row_html, re.IGNORECASE)
                             if win_match and win_match.group(1).endswith(".pdf"):
@@ -482,9 +425,7 @@ def scrape_memos(session, username):
                                     href = f"https://iare-data.s3.ap-south-1.amazonaws.com/uploads/STUDENTS/{roll}/mybox/{pdf_name}"
 
                     if not href or any(m['link'] == href for m in memos): continue
-                        
-                    for junk in tr.find_all(["button", "a", "script", "style", "i", "span"]):
-                        junk.decompose()
+                    for junk in tr.find_all(["button", "a", "script", "style", "i", "span"]): junk.decompose()
                         
                     cols = tr.find_all(["td", "th"])
                     name = "Official Grade Memo"
@@ -493,11 +434,9 @@ def scrape_memos(session, username):
                         txt = col.get_text(separator=" ", strip=True)
                         txt = re.sub(r'(?i)(cancel|print|view|download|close)', '', txt).strip(' -:>')
                         txt = re.sub(r'\s+', ' ', txt).strip()
-                        if re.match(r'^\d{2}[-/]\d{2}[-/]\d{2,4}$', txt):
-                            date = txt
+                        if re.match(r'^\d{2}[-/]\d{2}[-/]\d{2,4}$', txt): date = txt
                         elif any(x in txt.upper() for x in ["B. TECH", "EXAMINATION", "MEMO", "REGULAR", "SUPPLEMENTARY", "RESULTS"]):
-                            if 5 < len(txt) < 150: 
-                                name = txt
+                            if 5 < len(txt) < 150: name = txt
                     memos.append({"name": name, "date": date, "link": href})
 
             if not memos:
@@ -592,11 +531,10 @@ def scrape_profile(session, username):
         for k in empty_keys: del profile["Sections"][k]
         return profile
     except SessionExpiredError: raise
-    except Exception as e:
-        return {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
+    except Exception as e: return {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
 
 # ==========================================
-# CRITICAL FIX: AGGRESSIVE TIMETABLE PARSER
+# AGGRESSIVE TIMETABLE PARSER
 # ==========================================
 def scrape_timetable(session, ay=None, section=None):
     try:
@@ -623,22 +561,13 @@ def scrape_timetable(session, ay=None, section=None):
         
         if ay and section:
             try:
-                form_data = {
-                    ay_input_name: ay,
-                    sec_input_name: section,
-                    'action': 'TT_std',
-                    'submit': 'show',
-                    'show': 'show',
-                    'btnShow': 'show'
-                }
+                form_data = {ay_input_name: ay, sec_input_name: section, 'action': 'TT_std', 'submit': 'show', 'show': 'show', 'btnShow': 'show'}
                 form = soup.find('form')
                 if form:
                     for inp in form.find_all('input', type='hidden'):
-                        if inp.get('name'):
-                            form_data[inp.get('name')] = inp.get('value', '')
+                        if inp.get('name'): form_data[inp.get('name')] = inp.get('value', '')
                     submit_btn = form.find('button', type='submit') or form.find('input', type='submit')
-                    if submit_btn and submit_btn.get('name'):
-                        form_data[submit_btn.get('name')] = submit_btn.get('value', '') or 'show'
+                    if submit_btn and submit_btn.get('name'): form_data[submit_btn.get('name')] = submit_btn.get('value', '') or 'show'
 
                 res = session.post(BASE + "/home?action=TT_std", data=form_data, timeout=10)
                 if res.status_code == 200 and ("Period" in res.text or "Monday" in res.text):
@@ -646,13 +575,7 @@ def scrape_timetable(session, ay=None, section=None):
             except: pass
             
             if "Period" not in html_to_parse and "Monday" not in html_to_parse:
-                ajax_urls = [
-                    BASE + "/pages/student/timetable/ajax/timetable.php",
-                    BASE + "/pages/student/time_table/ajax/timetable.php",
-                    BASE + "/pages/student/time_table/ajax/day2day.php",
-                    BASE + "/pages/student/tt/ajax/tt.php",
-                    BASE + "/pages/student/tt/ajax/timetable.php"
-                ]
+                ajax_urls = [BASE + "/pages/student/timetable/ajax/timetable.php", BASE + "/pages/student/time_table/ajax/timetable.php", BASE + "/pages/student/time_table/ajax/day2day.php", BASE + "/pages/student/tt/ajax/tt.php", BASE + "/pages/student/tt/ajax/timetable.php"]
                 headers = {'x-requested-with': 'XMLHttpRequest'}
                 for url in ajax_urls:
                     for action in ['get_timetable', 'get_tt', 'show_tt', 'get_data', 'get_timetable_data']:
@@ -667,7 +590,6 @@ def scrape_timetable(session, ay=None, section=None):
 
         data_soup = BeautifulSoup(html_to_parse, "html.parser")
         
-        # Highly aggressive extraction using || to prevent string merging
         for table in data_soup.find_all("table"):
             header_text = table.get_text(separator=" ", strip=True).lower()
             if "period" in header_text or "monday" in header_text or "time" in header_text:
@@ -679,16 +601,10 @@ def scrape_timetable(session, ay=None, section=None):
                     if any(d in day_text.lower() for d in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]):
                         periods = []
                         for col in cols[1:]:
-                            # Force a strict separator to parse out messy HTML spans/brs
                             raw_text = col.get_text(separator="||", strip=True)
                             
                             if not raw_text or raw_text == "-" or "FREE" in raw_text.upper():
-                                periods.append({
-                                    "isFree": True, 
-                                    "subject": "-", 
-                                    "room": "", 
-                                    "faculty": ""
-                                })
+                                periods.append({"isFree": True, "subject": "-", "room": "", "faculty": ""})
                             else:
                                 parts = [p.strip() for p in raw_text.split("||") if p.strip() and p.strip() != '-']
                                 if not parts:
@@ -701,21 +617,12 @@ def scrape_timetable(session, ay=None, section=None):
                                 
                                 for p in parts[1:]:
                                     p_lower = p.lower()
-                                    if "room" in p_lower:
-                                        room = p.split(":")[-1].strip()
-                                    elif "faculty" in p_lower or "staff" in p_lower:
-                                        faculty = p.split(":")[-1].strip()
-                                    elif not faculty and len(p) > 3: 
-                                        faculty += p + " "
+                                    if "room" in p_lower: room = p.split(":")[-1].strip()
+                                    elif "faculty" in p_lower or "staff" in p_lower: faculty = p.split(":")[-1].strip()
+                                    elif not faculty and len(p) > 3: faculty += p + " "
                                         
-                                periods.append({
-                                    "isFree": False, 
-                                    "subject": subject, 
-                                    "room": room, 
-                                    "faculty": faculty.strip()
-                                })
-                        if periods: 
-                            schedule.append({"day": day_text, "periods": periods})
+                                periods.append({"isFree": False, "subject": subject, "room": room, "faculty": faculty.strip()})
+                        if periods: schedule.append({"day": day_text, "periods": periods})
                             
             elif "staff name" in header_text and "subject code" in header_text:
                 for tr in table.find_all("tr"):
@@ -741,7 +648,6 @@ def scrape_qp_init(session):
             soup = BeautifulSoup(r.text, "html.parser")
             options = []
             select_name = "exam_code"
-            
             def roman_to_int(roman):
                 return {'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5, 'VI': 6, 'VII': 7, 'VIII': 8}.get(roman, 0)
             
@@ -756,12 +662,7 @@ def scrape_qp_init(session):
                             sem_match = re.search(r'\b(I|II|III|IV|V|VI|VII|VIII)\s+SEMESTER\b', text.upper())
                             sem_val = roman_to_int(sem_match.group(1)) if sem_match else 0
                             is_see = 1 if "SEE" in text.upper() else 0
-                            options.append({
-                                "value": val, 
-                                "label": text,
-                                "sem_val": sem_val,
-                                "is_see": is_see
-                            })
+                            options.append({"value": val, "label": text, "sem_val": sem_val, "is_see": is_see})
                     break
             
             if options:
@@ -781,10 +682,8 @@ def scrape_qp_data(session, select_name, exam_code):
         def extract_from_mixed(content):
             if not content: return None
             content_str = str(content).strip()
-            if not content_str or 'NOT-UPLOADED' in content_str.upper() or 'NOT UPLOADED' in content_str.upper():
-                return None
-            if content_str.startswith('http'):
-                return content_str.replace('\\/', '/')
+            if not content_str or 'NOT-UPLOADED' in content_str.upper() or 'NOT UPLOADED' in content_str.upper(): return None
+            if content_str.startswith('http'): return content_str.replace('\\/', '/')
             soup_cell = BeautifulSoup(content_str, 'html.parser')
             a = soup_cell.find('a', href=True)
             if a and not a['href'].startswith('#') and 'javascript' not in a['href'].lower():
@@ -806,10 +705,7 @@ def scrape_qp_data(session, select_name, exam_code):
             qp_link = extract_from_mixed(qp_raw)
             sol_link = extract_from_mixed(sol_raw)
             if qp_link or sol_link:
-                data.append({
-                    "course_code": c_code, "course_name": c_name, "date": c_date,
-                    "qp_link": qp_link, "sol_link": sol_link
-                })
+                data.append({"course_code": c_code, "course_name": c_name, "date": c_date, "qp_link": qp_link, "sol_link": sol_link})
                 seen_codes.add(c_code)
 
         base_urls = [BASE + "/home?action=qp_scheme", BASE + "/home?action=qp_and_solution", BASE + "/home?action=labrecord_std"]
@@ -876,8 +772,7 @@ def scrape_qp_data(session, select_name, exam_code):
             cols = tr.find_all(["td", "th"])
             if len(cols) >= 6:
                 s_no_cell = cols[0].get_text(strip=True)
-                if s_no_cell.isdigit():
-                    add_record(cols[1].get_text(strip=True), cols[2].get_text(strip=True), cols[3].get_text(strip=True), str(cols[4]), str(cols[5]))
+                if s_no_cell.isdigit(): add_record(cols[1].get_text(strip=True), cols[2].get_text(strip=True), cols[3].get_text(strip=True), str(cols[4]), str(cols[5]))
         
         return {"ok": True, "records": data}
     except SessionExpiredError: raise
@@ -906,11 +801,7 @@ def require_token():
 
 @app.route("/check_update", methods=["GET"])
 def check_update():
-    return jsonify({
-        "version": "5.2.2", 
-        "build_number": 6, 
-        "download_url": "https://drive.google.com/file/d/1DN1wUwjgqv8t-Xbo0ZxSrdqBNWz6g8u2/view?usp=sharing"
-    })
+    return jsonify({"version": "5.2.2", "build_number": 6, "download_url": "https://drive.google.com/file/d/1DN1wUwjgqv8t-Xbo0ZxSrdqBNWz6g8u2/view?usp=sharing"})
 
 @app.route("/login", methods=["POST"])
 def api_login():
@@ -934,6 +825,7 @@ def api_attendance():
     token = require_token()
     return jsonify({"attendance": scrape_attendance(SESSIONS[token]), "biometric": scrape_biometric(SESSIONS[token])})
 
+# --- ADDED RESTORED COURSE DELIVERY ENDPOINT ---
 @app.route("/course_delivery", methods=["GET"])
 def api_course_delivery():
     token = require_token()
@@ -975,8 +867,7 @@ def api_faculty():
         with open("faculty_data.json", "r", encoding="utf-8") as f:
             data = json.load(f)
         return jsonify({"ok": True, "faculty": data})
-    except Exception as e:
-        return jsonify({"ok": False, "error": "Faculty data not found on server."})
+    except Exception: return jsonify({"ok": False, "error": "Faculty data not found on server."})
 
 @app.route("/all", methods=["GET"])
 def api_all():
@@ -984,7 +875,7 @@ def api_all():
     session = SESSIONS[token]
     username = TOKENS[token]["username"]  
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             f_att = executor.submit(scrape_attendance, session)
             f_bio = executor.submit(scrape_biometric, session)
             f_mid = executor.submit(scrape_midmarks, session)
@@ -1055,8 +946,7 @@ def api_lab_subject_data():
             soup = BeautifulSoup(exp_res.text, 'html.parser')
             for tr in soup.find_all('tr')[1:]:
                 cols = tr.find_all('td')
-                if len(cols) >= 6:
-                    schedule_list.append({"week": cols[0].get_text(strip=True), "title": cols[3].get_text(strip=True), "date": cols[5].get_text(strip=True)})
+                if len(cols) >= 6: schedule_list.append({"week": cols[0].get_text(strip=True), "title": cols[3].get_text(strip=True), "date": cols[5].get_text(strip=True)})
 
         sub_res = session.post(ajax_url, headers=headers, data={'rollno': ud.get('rollno'), 'ay': ud.get('ay'), 'sub_code': sub_code, 'action': 'day2day_lab'}, timeout=15)
         check_auth(sub_res)
