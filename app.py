@@ -1089,14 +1089,13 @@ def api_aat_upload():
         f = request.files['aat_file']
         file_bytes = f.read()
         filename = f.filename
-        
-        # Compress if needed
-        if len(file_bytes) > 1024 * 1024:
-            try: file_bytes = rasterize_and_compress_pdf(file_bytes)
-            except Exception: pass
-            if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large."}), 400
-
-    return jsonify(upload_aat_logic(SESSIONS[token], aat_type, subject_data, file_bytes, filename, youtube_link))
+@app.route("/all", methods=["GET"])
+def api_all():
+    token = require_token()
+    session = SESSIONS[token]
+    username = TOKENS[token]["username"]  
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             f_att = executor.submit(scrape_attendance, session)
             f_bio = executor.submit(scrape_biometric, session)
             f_mid = executor.submit(scrape_midmarks, session)
@@ -1117,7 +1116,8 @@ def api_aat_upload():
             "results": results_info,
             "timetable_init": f_tt.result()
         })
-    except SessionExpiredError: abort(401)
+    except SessionExpiredError:
+        abort(401)
 
 @app.route("/lab_init", methods=["GET"])
 def api_lab_init():
