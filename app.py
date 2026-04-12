@@ -242,27 +242,15 @@ def scrape_aat_list(session, aat_type):
 
 def scrape_aat_questions(session, aat_type, subject_data):
     try:
-        payload = {
-            "sub_code": subject_data.get("code", ""),
-            "sem": subject_data.get("sem", ""),
-            "ay": subject_data.get("ay", ""),
-            "aat_type": subject_data.get("aat_type_param", ""),
-            "dept_id": subject_data.get("dept_id", ""),
-            "action": "get_aat_question"
-        }
-        
-        ajax_url = BASE + "/pages/student/ajax/aatupload.php"
-        if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
-        elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
-
-        res = session.post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=10)
-        check_auth(res)
-        
+        # ... payload and request stuff stays the same ...
         soup = BeautifulSoup(res.text, 'html.parser')
         questions_text = ""
         question_pdf = ""
         
-        # Parse the specific HTML table format you provided
+        # New variables to send to the app
+        answer_pdf = ""
+        can_delete = False
+        
         tbody = soup.find('tbody')
         if tbody:
             trs = tbody.find_all('tr')
@@ -273,13 +261,31 @@ def scrape_aat_questions(session, aat_type, subject_data):
                     for a in cols[1].find_all("a", href=True):
                         if ".pdf" in a['href'].lower():
                             question_pdf = a['href'] if a['href'].startswith("http") else urljoin(BASE, a['href'])
+                
+                # NEW: Check the 3rd column for the Uploaded File link and Delete button!
+                if len(cols) >= 3:
+                    for a in cols[2].find_all("a", href=True):
+                        if "view" in a.get("title", "").lower() or "btn-success" in a.get("class", []):
+                            answer_pdf = a['href']
+                            
+                    # Check if there is a delete button
+                    if cols[2].find("button", class_=lambda c: c and "del" in c.lower()):
+                        can_delete = True
 
         if not questions_text:
             questions_text = "No questions found. Please check the portal directly."
             
-        return {"ok": True, "questions": questions_text, "question_pdf": question_pdf}
+        # Return the new fields to Flutter!
+        return {
+            "ok": True, 
+            "questions": questions_text, 
+            "question_pdf": question_pdf, 
+            "answer_pdf": answer_pdf, 
+            "can_delete": can_delete
+        }
     except SessionExpiredError: raise
     except Exception as e: return {"ok": False, "error": str(e)}
+
 
 def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=None, youtube_link=None):
     try:
