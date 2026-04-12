@@ -305,17 +305,23 @@ def scrape_aat_questions(session, aat_type, subject_data):
         if not questions_text:
             questions_text = soup.get_text(separator="\n", strip=True)
             
+        # NEW: Extract the unique hidden file ID needed for deletion!
+        file_id = ""
+        match_fileid = re.search(r'id="fileid_\d+"\s+value="([^"]+)"', res.text)
+        if match_fileid:
+            file_id = match_fileid.group(1)
+            
         return {
             "ok": True, 
             "questions": questions_text, 
             "question_pdf": question_pdf, 
             "answer_pdf": answer_pdf, 
-            "answer_video": answer_video, # Send video back to Flutter
+            "answer_video": answer_video, 
+            "file_id": file_id,
             "can_delete": can_delete
         }
     except SessionExpiredError: raise
     except Exception as e: return {"ok": False, "error": str(e)}
-
 
 def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=None, youtube_link=None):
     try:
@@ -327,19 +333,18 @@ def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=
             "subcode": (None, subject_data.get("code", "")),
             "sem": (None, subject_data.get("sem", "")),
             "ay": (None, subject_data.get("ay", "")),
+            "c_year": (None, subject_data.get("ay", "")), # Ensure year is passed securely
             "aat_type": (None, subject_data.get("aat_type_param", "")),
             "dept_id": (None, subject_data.get("dept_id", "")),
             "action": (None, "upload_answer")
         }
         
-        # NEW: Support sending BOTH at the same time if provided
+        # Accurately mapping link_1 and file_1 for dual-uploads
         if youtube_link:
             upload_payload['link_1'] = (None, youtube_link) 
-            upload_payload['url'] = (None, youtube_link) # Fallback key
         
         if file_bytes and filename:
             upload_payload['file_1'] = (filename, io.BytesIO(file_bytes), 'application/pdf') 
-            upload_payload['aat_file'] = (filename, io.BytesIO(file_bytes), 'application/pdf') # Fallback key
 
         res = session.post(ajax_url, files=upload_payload, timeout=30)
         check_auth(res)
@@ -1122,12 +1127,16 @@ def api_aat_delete():
     data = request.get_json() or {}
     aat_type = data.get("type")
     subject_data = data.get("subject_data", {})
+    file_id = data.get("file_id", "") # Grab the ID from Flutter
     
     ajax_url = BASE + "/pages/student/ajax/aatupload.php"
     if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
     elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
 
+    # EXACT payload matching the portal's JS
     payload = {
+        "id": file_id,
+        "c_year": subject_data.get("ay", ""),
         "subcode": subject_data.get("code", ""),
         "sem": subject_data.get("sem", ""),
         "ay": subject_data.get("ay", ""),
