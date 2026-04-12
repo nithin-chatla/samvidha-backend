@@ -192,26 +192,59 @@ def scrape_aat_list(session, aat_type):
         for tr in soup.find_all("tr"):
             cols = tr.find_all("td")
             if len(cols) >= 5:
-                btn = tr.find("button")
-                if btn:
-                    sub_code = btn.get("data-sub_code", "")
-                    sem = btn.get("data-sem", "")
-                    ay = btn.get("data-ay", "")
-                    aat_type_param = btn.get("data-aat_type", "")
-                    dept_id = btn.get("data-dept", "")
+                if aat_type == "Concept Video":
+                    sub_code = cols[1].get_text(strip=True)
                     course_name = cols[2].get_text(strip=True)
+                    question = cols[3].get_text(strip=True)
                     
+                    sem, ay, aat_type_param, dept_id = "", "", "", ""
+                    btn = tr.find(["button", "a", "input"])
+                    if btn:
+                        sem = btn.get("data-sem", "")
+                        ay = btn.get("data-ay", "")
+                        aat_type_param = btn.get("data-aat_type", "")
+                        dept_id = btn.get("data-dept", "")
+                    
+                    status = "Pending"
+                    url_cell_html = str(cols[4]).lower()
+                    if "value=" in url_cell_html and len(cols[4].find('input').get('value', '')) > 5 if cols[4].find('input') else False:
+                        status = "Submitted"
+                    elif "already uploaded" in url_cell_html or "view" in url_cell_html or "success" in url_cell_html:
+                        status = "Submitted"
+
                     subjects.append({
                         "code": sub_code,
                         "name": course_name,
                         "sem": sem,
                         "ay": ay,
-                        "aat_type_param": aat_type_param,
+                        "aat_type_param": "FMV", 
                         "dept_id": dept_id,
                         "last_date": last_date, 
-                        "status": "Pending", 
-                        "marks": "-"
+                        "status": status, 
+                        "marks": "-",
+                        "question": question
                     })
+                else:
+                    btn = tr.find("button")
+                    if btn:
+                        sub_code = btn.get("data-sub_code", "")
+                        sem = btn.get("data-sem", "")
+                        ay = btn.get("data-ay", "")
+                        aat_type_param = btn.get("data-aat_type", "")
+                        dept_id = btn.get("data-dept", "")
+                        course_name = cols[2].get_text(strip=True)
+                        
+                        subjects.append({
+                            "code": sub_code,
+                            "name": course_name,
+                            "sem": sem,
+                            "ay": ay,
+                            "aat_type_param": aat_type_param,
+                            "dept_id": dept_id,
+                            "last_date": last_date, 
+                            "status": "Pending", 
+                            "marks": "-"
+                        })
 
         import concurrent.futures
         def fetch_status(subj):
