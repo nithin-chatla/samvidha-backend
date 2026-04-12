@@ -182,6 +182,13 @@ def scrape_aat_list(session, aat_type):
         check_auth(r)
         soup = BeautifulSoup(r.text, 'html.parser')
         
+        # EXTRACT THE LAST DATE FROM THE HTML TEXT
+        last_date = "2026-12-31" # Default Fallback
+        m_date = re.search(r'(\d{2}-\d{2}-\d{4})', r.text)
+        if m_date:
+            parts = m_date.group(1).split('-')
+            if len(parts) == 3: last_date = f"{parts[2]}-{parts[1]}-{parts[0]}"
+            
         subjects = []
         for tr in soup.find_all("tr"):
             cols = tr.find_all("td")
@@ -192,7 +199,7 @@ def scrape_aat_list(session, aat_type):
                     sem = btn.get("data-sem", "")
                     ay = btn.get("data-ay", "")
                     aat_type_param = btn.get("data-aat_type", "")
-                    dept_id = btn.get("data-dept", "") # Extracted from the new HTML!
+                    dept_id = btn.get("data-dept", "")
                     
                     course_name = cols[2].get_text(strip=True)
                     
@@ -203,12 +210,12 @@ def scrape_aat_list(session, aat_type):
                         "ay": ay,
                         "aat_type_param": aat_type_param,
                         "dept_id": dept_id,
+                        "last_date": last_date, # THIS WAS THE MISSING KEY!
                         "status": "Pending", 
                         "marks": "-"
                     })
 
         import concurrent.futures
-        
         def fetch_status(subj):
             payload = {
                 "sub_code": subj["code"],
@@ -216,6 +223,7 @@ def scrape_aat_list(session, aat_type):
                 "ay": subj["ay"],
                 "aat_type": subj["aat_type_param"],
                 "dept_id": subj["dept_id"],
+                "last_date": subj["last_date"], # SENDING THE KEY
                 "action": "get_aat_question"
             }
             ajax_url = BASE + "/pages/student/ajax/aatupload.php"
@@ -239,6 +247,84 @@ def scrape_aat_list(session, aat_type):
         return {"ok": True, "subjects": subjects}
     except SessionExpiredError: raise
     except Exception as e: return {"ok": False, "error": str(e)}
+
+def scrape_aat_questions(session, aat_type, subject_data):
+    try:
+        payload = {
+            "sub_code": subject_data.get("code", ""),
+            "sem": subject_data.get("sem", ""),
+            "ay": subject_data.get("ay", ""),
+            "aat_type": subject_data.get("aat_type_param", ""),
+            "dept_id": subject_data.get("dept_id", ""),
+            "last_date": subject_data.get("last_date", "2026-12-31"), # SENDING THE KEY
+            "action": "get_aat_question"
+        }
+        
+        ajax_url = BASE + "/pages/student/ajax/aatupload.php"
+        if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
+        elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
+
+        res = session.post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=10)
+        check_auth(res)
+        
+        soup = BeautifulSoup(res.text, 'html.parser')
+        questions_text = ""
+        question_pdf = ""
+        answer_pdf = ""
+        can_delete = False
+        
+        cols = soup.find_all('td')
+        if len(cols) >= 3:
+            questions_text = cols[1].get_text(separator="\n", strip=True)
+            for a in cols[1].find_all("a", href=True):
+                if ".pdf" in a['href'].lower():
+                    question_pdf = a['href'] if a['href'].startswith("http") else urljoin(BASE, a['href'])
+            
+            for a in cols[2].find_all("a", href=True):
+                if "view" in a.get("title", "").lower() or "btn-success" in a.get("class", []) or "eye" in str(a).lower():
+                    answer_pdf = a['href']
+                    
+            if cols[2].find("button", class_=lambda c: c and ("del" in c.lower() or "danger" in c.lower())):
+                can_delete = True
+
+        if not questions_text:
+            questions_text = soup.get_text(separator="\n", strip=True)
+            
+        return {
+            "ok": True, 
+            "questions": questions_text, 
+            "question_pdf": question_pdf, 
+            "answer_pdf": answer_pdf, 
+            "can_delete": can_delete
+        }
+    except SessionExpiredError: raise
+    except Exception as e: return {"ok": False, "error": str(e)}
+
+# NOTE: Paste this route near the bottom of app.py with your other routes
+@app.route("/aat_delete", methods=["POST"])
+def api_aat_delete():
+    token = require_token()
+    data = request.get_json() or {}
+    aat_type = data.get("type")
+    subject_data = data.get("subject_data", {})
+    
+    ajax_url = BASE + "/pages/student/ajax/aatupload.php"
+    if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
+    elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
+
+    payload = {
+        "subcode": subject_data.get("code", ""),
+        "sem": subject_data.get("sem", ""),
+        "ay": subject_data.get("ay", ""),
+        "aat_type": subject_data.get("aat_type_param", ""),
+        "action": "delete_answer"
+    }
+    
+    try:
+        res = SESSIONS[token].post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=10)
+        return jsonify({"ok": True, "message": "Deleted successfully!"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
 
 def scrape_aat_questions(session, aat_type, subject_data):
     try:
