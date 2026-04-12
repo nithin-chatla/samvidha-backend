@@ -183,41 +183,30 @@ def scrape_aat_list(session, aat_type):
         soup = BeautifulSoup(r.text, 'html.parser')
         
         subjects = []
-        
-        # 1. Extract subjects and their hidden AJAX parameters from the "Get" buttons
         for tr in soup.find_all("tr"):
             cols = tr.find_all("td")
             if len(cols) >= 5:
                 btn = tr.find("button")
                 if btn:
-                    onclick = btn.get("onclick", "")
-                    # Extract the arguments from functions like: get_question('ACSD13', '4', '2025-26', 'CS-I', '2026-03-13')
-                    m = re.search(r"\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'", onclick)
-                    if m:
-                        sub_code = m.group(1)
-                        sem = m.group(2)
-                        ay = m.group(3)
-                        aat_type_param = m.group(4)
-                        
-                        last_date = ""
-                        m_date = re.search(r"\(\s*'[^']+'\s*,\s*'[^']+'\s*,\s*'[^']+'\s*,\s*'[^']+'\s*,\s*'([^']+)'", onclick)
-                        if m_date:
-                            last_date = m_date.group(1)
-                            
-                        course_name = cols[2].get_text(strip=True)
-                        
-                        subjects.append({
-                            "code": sub_code,
-                            "name": course_name,
-                            "sem": sem,
-                            "ay": ay,
-                            "aat_type_param": aat_type_param,
-                            "last_date": last_date,
-                            "status": "Pending", # Default, updated below
-                            "marks": "-"
-                        })
+                    sub_code = btn.get("data-sub_code", "")
+                    sem = btn.get("data-sem", "")
+                    ay = btn.get("data-ay", "")
+                    aat_type_param = btn.get("data-aat_type", "")
+                    dept_id = btn.get("data-dept", "") # Extracted from the new HTML!
+                    
+                    course_name = cols[2].get_text(strip=True)
+                    
+                    subjects.append({
+                        "code": sub_code,
+                        "name": course_name,
+                        "sem": sem,
+                        "ay": ay,
+                        "aat_type_param": aat_type_param,
+                        "dept_id": dept_id,
+                        "status": "Pending", 
+                        "marks": "-"
+                    })
 
-        # 2. Concurrently fetch the status of each subject (Looking for the Green Eye button)
         import concurrent.futures
         
         def fetch_status(subj):
@@ -226,10 +215,9 @@ def scrape_aat_list(session, aat_type):
                 "sem": subj["sem"],
                 "ay": subj["ay"],
                 "aat_type": subj["aat_type_param"],
-                "last_date": subj["last_date"],
+                "dept_id": subj["dept_id"],
                 "action": "get_aat_question"
             }
-            # Adjusting AJAX URL if it's concept video or tech talk
             ajax_url = BASE + "/pages/student/ajax/aatupload.php"
             if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
             elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
@@ -238,7 +226,6 @@ def scrape_aat_list(session, aat_type):
                 res = session.post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=5)
                 if res.status_code == 200:
                     html = res.text.lower()
-                    # The Green Eye button indicates successful upload
                     if "btn-success" in html or "fa-eye" in html or "already uploaded" in html:
                         subj["status"] = "Submitted"
                     if "evaluated" in html:
@@ -255,13 +242,12 @@ def scrape_aat_list(session, aat_type):
 
 def scrape_aat_questions(session, aat_type, subject_data):
     try:
-        # Use the exact payload from the DevTools screenshot
         payload = {
             "sub_code": subject_data.get("code", ""),
             "sem": subject_data.get("sem", ""),
             "ay": subject_data.get("ay", ""),
             "aat_type": subject_data.get("aat_type_param", ""),
-            "last_date": subject_data.get("last_date", ""),
+            "dept_id": subject_data.get("dept_id", ""),
             "action": "get_aat_question"
         }
         
@@ -276,17 +262,17 @@ def scrape_aat_questions(session, aat_type, subject_data):
         questions_text = ""
         question_pdf = ""
         
-        # Extract the question text from the resulting table
-        trs = soup.find_all("tr")
-        if len(trs) >= 2: # Skip header row
-            cols = trs[1].find_all(["td", "th"])
-            if len(cols) >= 2:
-                questions_text = cols[1].get_text(separator="\n", strip=True)
-                
-            # Check if there's an attached PDF in the question
-            for a in trs[1].find_all("a", href=True):
-                if ".pdf" in a['href'].lower():
-                    question_pdf = a['href'] if a['href'].startswith("http") else urljoin(BASE, a['href'])
+        # Parse the specific HTML table format you provided
+        tbody = soup.find('tbody')
+        if tbody:
+            trs = tbody.find_all('tr')
+            if trs:
+                cols = trs[0].find_all('td')
+                if len(cols) >= 2:
+                    questions_text = cols[1].get_text(separator="\n", strip=True)
+                    for a in cols[1].find_all("a", href=True):
+                        if ".pdf" in a['href'].lower():
+                            question_pdf = a['href'] if a['href'].startswith("http") else urljoin(BASE, a['href'])
 
         if not questions_text:
             questions_text = "No questions found. Please check the portal directly."
@@ -302,29 +288,24 @@ def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=
         elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
 
         upload_payload = {
-            "sub_code": (None, subject_data.get("code", "")),
+            "subcode": (None, subject_data.get("code", "")),
             "sem": (None, subject_data.get("sem", "")),
             "ay": (None, subject_data.get("ay", "")),
             "aat_type": (None, subject_data.get("aat_type_param", "")),
-            "last_date": (None, subject_data.get("last_date", "")),
+            "dept_id": (None, subject_data.get("dept_id", "")),
+            "action": (None, "upload_answer")
         }
         
         if youtube_link:
-            upload_payload['youtube_link'] = (None, youtube_link)
-            upload_payload['url'] = (None, youtube_link)
-            upload_payload['action'] = (None, 'upload_video') 
+            upload_payload['link_1'] = (None, youtube_link) # Matches the JS logic
         else:
-            # We will finalize this payload once we do Mission 2 for uploading!
-            upload_payload['action'] = (None, 'upload_aat')
             if file_bytes and filename:
-                upload_payload['aat_file'] = (filename, io.BytesIO(file_bytes), 'application/pdf')
-                upload_payload['file'] = (filename, io.BytesIO(file_bytes), 'application/pdf') 
+                upload_payload['file_1'] = (filename, io.BytesIO(file_bytes), 'application/pdf') # Matches the JS logic
 
         res = session.post(ajax_url, files=upload_payload, timeout=30)
         check_auth(res)
         
-        # ... validation logic ...
-        return {"ok": True, "message": "Uploaded successfully!"}
+        return {"ok": True, "message": "Uploaded successfully to Samvidha!"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -1073,13 +1054,12 @@ def api_aat_upload():
     token = require_token()
     aat_type = request.form.get("type")
     
-    # Reconstruct the subject_data dictionary from the form fields
     subject_data = {
         "code": request.form.get("code"),
         "sem": request.form.get("sem"),
         "ay": request.form.get("ay"),
         "aat_type_param": request.form.get("aat_type_param"),
-        "last_date": request.form.get("last_date")
+        "dept_id": request.form.get("dept_id")
     }
     youtube_link = request.form.get("youtube_link")
     
@@ -1089,6 +1069,15 @@ def api_aat_upload():
         f = request.files['aat_file']
         file_bytes = f.read()
         filename = f.filename
+        
+        # Compress if needed
+        if len(file_bytes) > 1024 * 1024:
+            try: file_bytes = rasterize_and_compress_pdf(file_bytes)
+            except Exception: pass
+            if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large."}), 400
+
+    return jsonify(upload_aat_logic(SESSIONS[token], aat_type, subject_data, file_bytes, filename, youtube_link))
+
 @app.route("/all", methods=["GET"])
 def api_all():
     token = require_token()
