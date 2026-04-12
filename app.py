@@ -1119,7 +1119,25 @@ def api_aat_delete():
     file_id = data.get("file_id", "") 
     
     ajax_url = BASE + "/pages/student/ajax/aatupload.php"
-    if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
+    if aat_type == "Concept Video": 
+        ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
+        blank_payload = {
+            "subcode": (None, subject_data.get("code", "")),
+            "sem": (None, subject_data.get("sem", "")),
+            "ay": (None, subject_data.get("ay", "")),
+            "aat_type": (None, subject_data.get("aat_type_param", "")),
+            "dept_id": (None, subject_data.get("dept_id", "")),
+            "action": (None, "upload_answer"),
+            "url": (None, ""),
+            "link_1": (None, ""),
+            "video_link": (None, "")
+        }
+        try:
+            SESSIONS[token].post(ajax_url, files=blank_payload, timeout=10)
+            return jsonify({"ok": True, "message": "Video link cleared!"})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+            
     elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
 
     payload = {
