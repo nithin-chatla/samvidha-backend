@@ -182,8 +182,7 @@ def scrape_aat_list(session, aat_type):
         check_auth(r)
         soup = BeautifulSoup(r.text, 'html.parser')
         
-        # EXTRACT THE LAST DATE FROM THE HTML TEXT
-        last_date = "2026-12-31" # Default Fallback
+        last_date = "2026-12-31" 
         m_date = re.search(r'(\d{2}-\d{2}-\d{4})', r.text)
         if m_date:
             parts = m_date.group(1).split('-')
@@ -200,7 +199,6 @@ def scrape_aat_list(session, aat_type):
                     ay = btn.get("data-ay", "")
                     aat_type_param = btn.get("data-aat_type", "")
                     dept_id = btn.get("data-dept", "")
-                    
                     course_name = cols[2].get_text(strip=True)
                     
                     subjects.append({
@@ -210,7 +208,7 @@ def scrape_aat_list(session, aat_type):
                         "ay": ay,
                         "aat_type_param": aat_type_param,
                         "dept_id": dept_id,
-                        "last_date": last_date, # THIS WAS THE MISSING KEY!
+                        "last_date": last_date, 
                         "status": "Pending", 
                         "marks": "-"
                     })
@@ -223,7 +221,7 @@ def scrape_aat_list(session, aat_type):
                 "ay": subj["ay"],
                 "aat_type": subj["aat_type_param"],
                 "dept_id": subj["dept_id"],
-                "last_date": subj["last_date"], # SENDING THE KEY
+                "last_date": subj["last_date"], 
                 "action": "get_aat_question"
             }
             ajax_url = BASE + "/pages/student/ajax/aatupload.php"
@@ -238,6 +236,12 @@ def scrape_aat_list(session, aat_type):
                         subj["status"] = "Submitted"
                     if "evaluated" in html:
                         subj["status"] = "Evaluated"
+                        # Extract marks
+                        soup_res = BeautifulSoup(res.text, 'html.parser')
+                        for td in soup_res.find_all('td'):
+                            t = td.get_text(strip=True)
+                            if t.isdigit() or t.replace('.','',1).isdigit():
+                                subj["marks"] = t
             except: pass
             return subj
 
@@ -250,7 +254,6 @@ def scrape_aat_list(session, aat_type):
 
 def scrape_aat_questions(session, aat_type, subject_data):
     try:
-        # 1. Build the exact payload
         payload = {
             "sub_code": subject_data.get("code", ""),
             "sem": subject_data.get("sem", ""),
@@ -261,39 +264,30 @@ def scrape_aat_questions(session, aat_type, subject_data):
             "action": "get_aat_question"
         }
         
-        # 2. Determine the correct URL based on AAT Type
         ajax_url = BASE + "/pages/student/ajax/aatupload.php"
-        if aat_type == "Concept Video": 
-            ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
-        elif aat_type == "Tech Talk": 
-            ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
+        if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
+        elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
 
-        # 3. Make the request (THIS IS THE 'res' VARIABLE THAT WAS MISSING!)
         res = session.post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=10)
         check_auth(res)
         
-        # 4. Parse the HTML response
         soup = BeautifulSoup(res.text, 'html.parser')
         questions_text = ""
         question_pdf = ""
         answer_pdf = ""
         can_delete = False
         
-        # 5. Extract questions and buttons from the table
         tbody = soup.find('tbody')
         if tbody:
             trs = tbody.find_all('tr')
             if trs:
                 cols = trs[0].find_all('td')
-                
-                # Extract the written question text
                 if len(cols) >= 2:
                     questions_text = cols[1].get_text(separator="\n", strip=True)
                     for a in cols[1].find_all("a", href=True):
                         if ".pdf" in a['href'].lower():
                             question_pdf = a['href'] if a['href'].startswith("http") else urljoin(BASE, a['href'])
                 
-                # Check the 3rd column for Uploaded File link (Green Eye) and Delete button
                 if len(cols) >= 3:
                     for a in cols[2].find_all("a", href=True):
                         if "view" in a.get("title", "").lower() or "btn-success" in a.get("class", []) or "eye" in str(a).lower():
@@ -312,83 +306,8 @@ def scrape_aat_questions(session, aat_type, subject_data):
             "answer_pdf": answer_pdf, 
             "can_delete": can_delete
         }
-    except SessionExpiredError: 
-        raise
-    except Exception as e: 
-        return {"ok": False, "error": str(e)}
-
-# NOTE: Paste this route near the bottom of app.py with your other routes
-@app.route("/aat_delete", methods=["POST"])
-def api_aat_delete():
-    token = require_token()
-    data = request.get_json() or {}
-    aat_type = data.get("type")
-    subject_data = data.get("subject_data", {})
-    
-    ajax_url = BASE + "/pages/student/ajax/aatupload.php"
-    if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
-    elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
-
-    payload = {
-        "subcode": subject_data.get("code", ""),
-        "sem": subject_data.get("sem", ""),
-        "ay": subject_data.get("ay", ""),
-        "aat_type": subject_data.get("aat_type_param", ""),
-        "action": "delete_answer"
-    }
-    
-    try:
-        res = SESSIONS[token].post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=10)
-        return jsonify({"ok": True, "message": "Deleted successfully!"})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
-
-def scrape_aat_questions(session, aat_type, subject_data):
-    try:
-        # ... payload and request stuff stays the same ...
-        soup = BeautifulSoup(res.text, 'html.parser')
-        questions_text = ""
-        question_pdf = ""
-        
-        # New variables to send to the app
-        answer_pdf = ""
-        can_delete = False
-        
-        tbody = soup.find('tbody')
-        if tbody:
-            trs = tbody.find_all('tr')
-            if trs:
-                cols = trs[0].find_all('td')
-                if len(cols) >= 2:
-                    questions_text = cols[1].get_text(separator="\n", strip=True)
-                    for a in cols[1].find_all("a", href=True):
-                        if ".pdf" in a['href'].lower():
-                            question_pdf = a['href'] if a['href'].startswith("http") else urljoin(BASE, a['href'])
-                
-                # NEW: Check the 3rd column for the Uploaded File link and Delete button!
-                if len(cols) >= 3:
-                    for a in cols[2].find_all("a", href=True):
-                        if "view" in a.get("title", "").lower() or "btn-success" in a.get("class", []):
-                            answer_pdf = a['href']
-                            
-                    # Check if there is a delete button
-                    if cols[2].find("button", class_=lambda c: c and "del" in c.lower()):
-                        can_delete = True
-
-        if not questions_text:
-            questions_text = "No questions found. Please check the portal directly."
-            
-        # Return the new fields to Flutter!
-        return {
-            "ok": True, 
-            "questions": questions_text, 
-            "question_pdf": question_pdf, 
-            "answer_pdf": answer_pdf, 
-            "can_delete": can_delete
-        }
     except SessionExpiredError: raise
     except Exception as e: return {"ok": False, "error": str(e)}
-
 
 def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=None, youtube_link=None):
     try:
@@ -406,10 +325,10 @@ def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=
         }
         
         if youtube_link:
-            upload_payload['link_1'] = (None, youtube_link) # Matches the JS logic
+            upload_payload['link_1'] = (None, youtube_link) 
         else:
             if file_bytes and filename:
-                upload_payload['file_1'] = (filename, io.BytesIO(file_bytes), 'application/pdf') # Matches the JS logic
+                upload_payload['file_1'] = (filename, io.BytesIO(file_bytes), 'application/pdf') 
 
         res = session.post(ajax_url, files=upload_payload, timeout=30)
         check_auth(res)
@@ -1149,8 +1068,7 @@ def api_faculty():
 def api_aat_list():
     token = require_token()
     data = request.get_json() or {}
-    aat_type = data.get("type")
-    return jsonify(scrape_aat_list(SESSIONS[token], aat_type))
+    return jsonify(scrape_aat_list(SESSIONS[token], data.get("type")))
 
 @app.route("/aat_questions", methods=["POST"])
 def api_aat_questions():
@@ -1186,6 +1104,31 @@ def api_aat_upload():
             if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large."}), 400
 
     return jsonify(upload_aat_logic(SESSIONS[token], aat_type, subject_data, file_bytes, filename, youtube_link))
+
+@app.route("/aat_delete", methods=["POST"])
+def api_aat_delete():
+    token = require_token()
+    data = request.get_json() or {}
+    aat_type = data.get("type")
+    subject_data = data.get("subject_data", {})
+    
+    ajax_url = BASE + "/pages/student/ajax/aatupload.php"
+    if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
+    elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
+
+    payload = {
+        "subcode": subject_data.get("code", ""),
+        "sem": subject_data.get("sem", ""),
+        "ay": subject_data.get("ay", ""),
+        "aat_type": subject_data.get("aat_type_param", ""),
+        "action": "delete_answer"
+    }
+    
+    try:
+        res = SESSIONS[token].post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=10)
+        return jsonify({"ok": True, "message": "Deleted successfully!"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
 
 @app.route("/all", methods=["GET"])
 def api_all():
