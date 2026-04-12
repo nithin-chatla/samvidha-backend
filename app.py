@@ -236,7 +236,6 @@ def scrape_aat_list(session, aat_type):
                         subj["status"] = "Submitted"
                     if "evaluated" in html:
                         subj["status"] = "Evaluated"
-                        # Extract marks
                         soup_res = BeautifulSoup(res.text, 'html.parser')
                         for td in soup_res.find_all('td'):
                             t = td.get_text(strip=True)
@@ -275,7 +274,7 @@ def scrape_aat_questions(session, aat_type, subject_data):
         questions_text = ""
         question_pdf = ""
         answer_pdf = ""
-        answer_video = "" # NEW: Support for AAT-2 Video Links
+        answer_video = ""
         can_delete = False
         
         tbody = soup.find('tbody')
@@ -289,14 +288,16 @@ def scrape_aat_questions(session, aat_type, subject_data):
                         if ".pdf" in a['href'].lower():
                             question_pdf = a['href'] if a['href'].startswith("http") else urljoin(BASE, a['href'])
                 
+                # Check for uploaded content in the last column
                 if len(cols) >= 3:
-                    # NEW: Accurately separate the PDF link from the Video link
                     for a in cols[2].find_all("a", href=True):
                         href = a['href']
-                        if "youtube" in href.lower() or "youtu.be" in href.lower() or "drive" in href.lower() or "video" in a.get("title", "").lower():
+                        title_lower = a.get("title", "").lower()
+                        class_lower = " ".join(a.get("class", [])).lower()
+                        
+                        if "youtube" in href.lower() or "youtu.be" in href.lower() or "drive" in href.lower() or "video" in title_lower:
                             answer_video = href
-                        elif "view" in a.get("title", "").lower() or "btn-success" in a.get("class", []) or "eye" in str(a).lower():
-                            # If it's not explicitly a video URL, assume it's the PDF
+                        elif "view" in title_lower or "btn-success" in class_lower or "eye" in str(a).lower():
                             answer_pdf = href
                             
                     if cols[2].find("button", class_=lambda c: c and ("del" in c.lower() or "danger" in c.lower())):
@@ -305,11 +306,12 @@ def scrape_aat_questions(session, aat_type, subject_data):
         if not questions_text:
             questions_text = soup.get_text(separator="\n", strip=True)
             
-        # NEW: Extract the unique hidden file ID needed for deletion!
+        # CRITICAL FIX: Safe extraction of the hidden file_id required for deletion
         file_id = ""
-        match_fileid = re.search(r'id="fileid_\d+"\s+value="([^"]+)"', res.text)
-        if match_fileid:
-            file_id = match_fileid.group(1)
+        for inp in soup.find_all("input", type="hidden"):
+            if "fileid_" in inp.get("id", "") or "fileid_" in inp.get("name", ""):
+                file_id = inp.get("value", "")
+                break
             
         return {
             "ok": True, 
@@ -333,13 +335,12 @@ def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=
             "subcode": (None, subject_data.get("code", "")),
             "sem": (None, subject_data.get("sem", "")),
             "ay": (None, subject_data.get("ay", "")),
-            "c_year": (None, subject_data.get("ay", "")), # Ensure year is passed securely
+            "c_year": (None, subject_data.get("ay", "")),
             "aat_type": (None, subject_data.get("aat_type_param", "")),
             "dept_id": (None, subject_data.get("dept_id", "")),
             "action": (None, "upload_answer")
         }
         
-        # Accurately mapping link_1 and file_1 for dual-uploads
         if youtube_link:
             upload_payload['link_1'] = (None, youtube_link) 
         
@@ -675,75 +676,6 @@ def scrape_memos(session, username):
             return memos
     except Exception as e: print(f"Memos Error: {e}")
     return []
-
-def scrape_profile(session, username):
-    try:
-        r = session.get(BASE + "/home?action=profile", timeout=15)
-        check_auth(r)
-        soup = BeautifulSoup(r.text, "html.parser")
-        profile = {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
-        
-        header_card = soup.find("div", class_=lambda c: c and any(x in c.lower() for x in ['profile', 'user-info', 'card-body']))
-        if not header_card: header_card = soup
-        name = header_card.find(["h3", "h4", "h5", "strong"])
-        if name: profile["Header"]["Full Name"] = name.get_text(strip=True)
-        branch = header_card.find(["h5", "p"])
-        if branch: profile["Header"]["Department"] = branch.get_text(strip=True)
-
-        for table in soup.find_all("table"):
-            heading = table.find_previous(["h1", "h2", "h3", "h4", "h5", "h6", "div"], class_=lambda c: c and ('heading' in c.lower() or 'title' in c.lower() or 'panel-title' in c.lower()))
-            panel = table.find_parent(["div"], class_=lambda c: c and 'panel' in c.lower())
-            if panel and not heading:
-                heading = panel.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and 'heading' in c.lower())
-            section_name = heading.get_text(strip=True) if heading else "Other Details"
-            if not section_name or len(section_name) > 40: section_name = "Other Details"
-            if section_name not in profile["Sections"]: profile["Sections"][section_name] = {}
-            for tr in table.find_all("tr"):
-                cols = tr.find_all(["th", "td"])
-                if len(cols) >= 2:
-                    if cols[0].get_text(strip=True).isdigit() and len(cols) > 2:
-                        key = cols[1].get_text(strip=True).replace(":", "")
-                        val_elem = cols[-1]
-                    else:
-                        key = cols[0].get_text(strip=True).replace(":", "")
-                        val_elem = cols[1] if len(cols) == 2 else cols[-1]
-                    
-                    if key.lower() in ["s.no", "sno", "#", "sl.no", ""]: continue
-                    
-                    a_tag = val_elem.find("a", href=True)
-                    if a_tag and "javascript" not in a_tag["href"].lower() and "#" not in a_tag["href"]:
-                        href = a_tag["href"]
-                        if href.startswith("/"): href = BASE + href
-                        elif not href.startswith("http"): href = BASE + "/" + href
-                        doc_name = val_elem.get_text(strip=True)
-                        if not doc_name or doc_name.lower() in ["view", "download", "-"]: doc_name = key
-                        profile["Documents"][doc_name] = href
-                        continue
-                        
-                    val = val_elem.get_text(separator=" ", strip=True)
-                    if val and val != "-" and len(key) < 50:
-                        profile["Sections"][section_name][key] = val
-
-        for strong in soup.find_all(["strong", "b"]):
-            key = strong.get_text(strip=True).replace(":", "")
-            if not key or len(key) > 40: continue
-            parent = strong.parent
-            if parent.name in ["td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "a", "button"]: continue
-            text_content = parent.get_text(separator="\n", strip=True)
-            val = text_content.replace(strong.get_text(strip=True), "").strip().strip(":\n- ")
-            if val and len(val) > 0 and len(val) < 200:
-                panel = parent.find_parent(["div"], class_=lambda c: c and 'panel' in c.lower())
-                section_name = "Contacts"
-                if panel:
-                    heading = panel.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and 'heading' in c.lower())
-                    if heading: section_name = heading.get_text(strip=True)
-                if section_name not in profile["Sections"]: profile["Sections"][section_name] = {}
-                profile["Sections"][section_name][key] = val
-        empty_keys = [k for k, v in profile["Sections"].items() if not v]
-        for k in empty_keys: del profile["Sections"][k]
-        return profile
-    except SessionExpiredError: raise
-    except Exception as e: return {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
 
 def scrape_timetable(session, ay=None, section=None):
     try:
@@ -1113,7 +1045,6 @@ def api_aat_upload():
         file_bytes = f.read()
         filename = f.filename
         
-        # Compress if needed
         if len(file_bytes) > 1024 * 1024:
             try: file_bytes = rasterize_and_compress_pdf(file_bytes)
             except Exception: pass
@@ -1127,13 +1058,12 @@ def api_aat_delete():
     data = request.get_json() or {}
     aat_type = data.get("type")
     subject_data = data.get("subject_data", {})
-    file_id = data.get("file_id", "") # Grab the ID from Flutter
+    file_id = data.get("file_id", "") 
     
     ajax_url = BASE + "/pages/student/ajax/aatupload.php"
     if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
     elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
 
-    # EXACT payload matching the portal's JS
     payload = {
         "id": file_id,
         "c_year": subject_data.get("ay", ""),
