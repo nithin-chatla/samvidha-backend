@@ -1040,7 +1040,7 @@ def api_aat_upload():
     
     file_bytes = None
     filename = None
-    if not youtube_link and 'aat_file' in request.files:
+    if 'aat_file' in request.files:
         f = request.files['aat_file']
         file_bytes = f.read()
         filename = f.filename
