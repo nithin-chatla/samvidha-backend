@@ -275,6 +275,7 @@ def scrape_aat_questions(session, aat_type, subject_data):
         questions_text = ""
         question_pdf = ""
         answer_pdf = ""
+        answer_video = "" # NEW: Support for AAT-2 Video Links
         can_delete = False
         
         tbody = soup.find('tbody')
@@ -289,9 +290,14 @@ def scrape_aat_questions(session, aat_type, subject_data):
                             question_pdf = a['href'] if a['href'].startswith("http") else urljoin(BASE, a['href'])
                 
                 if len(cols) >= 3:
+                    # NEW: Accurately separate the PDF link from the Video link
                     for a in cols[2].find_all("a", href=True):
-                        if "view" in a.get("title", "").lower() or "btn-success" in a.get("class", []) or "eye" in str(a).lower():
-                            answer_pdf = a['href']
+                        href = a['href']
+                        if "youtube" in href.lower() or "youtu.be" in href.lower() or "drive" in href.lower() or "video" in a.get("title", "").lower():
+                            answer_video = href
+                        elif "view" in a.get("title", "").lower() or "btn-success" in a.get("class", []) or "eye" in str(a).lower():
+                            # If it's not explicitly a video URL, assume it's the PDF
+                            answer_pdf = href
                             
                     if cols[2].find("button", class_=lambda c: c and ("del" in c.lower() or "danger" in c.lower())):
                         can_delete = True
@@ -304,10 +310,12 @@ def scrape_aat_questions(session, aat_type, subject_data):
             "questions": questions_text, 
             "question_pdf": question_pdf, 
             "answer_pdf": answer_pdf, 
+            "answer_video": answer_video, # Send video back to Flutter
             "can_delete": can_delete
         }
     except SessionExpiredError: raise
     except Exception as e: return {"ok": False, "error": str(e)}
+
 
 def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=None, youtube_link=None):
     try:
@@ -324,11 +332,14 @@ def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=
             "action": (None, "upload_answer")
         }
         
+        # NEW: Support sending BOTH at the same time if provided
         if youtube_link:
             upload_payload['link_1'] = (None, youtube_link) 
-        else:
-            if file_bytes and filename:
-                upload_payload['file_1'] = (filename, io.BytesIO(file_bytes), 'application/pdf') 
+            upload_payload['url'] = (None, youtube_link) # Fallback key
+        
+        if file_bytes and filename:
+            upload_payload['file_1'] = (filename, io.BytesIO(file_bytes), 'application/pdf') 
+            upload_payload['aat_file'] = (filename, io.BytesIO(file_bytes), 'application/pdf') # Fallback key
 
         res = session.post(ajax_url, files=upload_payload, timeout=30)
         check_auth(res)
