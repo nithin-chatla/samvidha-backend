@@ -206,11 +206,30 @@ def scrape_aat_list(session, aat_type):
                         dept_id = btn.get("data-dept", "")
                     
                     status = "Pending"
+                    video_link = ""
+                    file_id = ""
+                    can_delete = False
                     url_cell_html = str(cols[4]).lower()
-                    if "value=" in url_cell_html and len(cols[4].find('input').get('value', '')) > 5 if cols[4].find('input') else False:
+                    
+                    input_tag = cols[4].find('input', type="text")
+                    if input_tag:
+                        val = input_tag.get('value', '').strip()
+                        if val.startswith('http'): video_link = val
+                        
+                    for a_tag in cols[4].find_all('a', href=True):
+                        href = a_tag['href']
+                        if "youtu" in href.lower() or "drive" in href.lower() or href.startswith("http"):
+                            if not video_link: video_link = href
+                            
+                    if len(video_link) > 5 or "already uploaded" in url_cell_html or "view" in url_cell_html or "success" in url_cell_html:
                         status = "Submitted"
-                    elif "already uploaded" in url_cell_html or "view" in url_cell_html or "success" in url_cell_html:
-                        status = "Submitted"
+                        
+                    del_btn = cols[4].find(["button", "a"], class_=lambda c: c and ("del" in c.lower() or "danger" in c.lower()))
+                    if del_btn: can_delete = True
+                    
+                    for inp in cols[4].find_all('input', type='hidden'):
+                        if "fileid_" in inp.get("id", "") or "fileid_" in inp.get("name", ""):
+                            file_id = inp.get("value", "")
 
                     subjects.append({
                         "code": sub_code,
@@ -222,7 +241,10 @@ def scrape_aat_list(session, aat_type):
                         "last_date": last_date, 
                         "status": status, 
                         "marks": "-",
-                        "question": question
+                        "question": question,
+                        "video_link": video_link,
+                        "file_id": file_id,
+                        "can_delete": can_delete
                     })
                 else:
                     btn = tr.find("button")
@@ -376,6 +398,9 @@ def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=
         
         if youtube_link:
             upload_payload['link_1'] = (None, youtube_link) 
+            upload_payload['url'] = (None, youtube_link) 
+            upload_payload['video_link'] = (None, youtube_link)
+            upload_payload['fmv_url'] = (None, youtube_link)
         
         if file_bytes and filename:
             upload_payload['file_1'] = (filename, io.BytesIO(file_bytes), 'application/pdf') 
