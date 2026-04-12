@@ -250,42 +250,57 @@ def scrape_aat_list(session, aat_type):
 
 def scrape_aat_questions(session, aat_type, subject_data):
     try:
+        # 1. Build the exact payload
         payload = {
             "sub_code": subject_data.get("code", ""),
             "sem": subject_data.get("sem", ""),
             "ay": subject_data.get("ay", ""),
             "aat_type": subject_data.get("aat_type_param", ""),
             "dept_id": subject_data.get("dept_id", ""),
-            "last_date": subject_data.get("last_date", "2026-12-31"), # SENDING THE KEY
+            "last_date": subject_data.get("last_date", "2026-12-31"), 
             "action": "get_aat_question"
         }
         
+        # 2. Determine the correct URL based on AAT Type
         ajax_url = BASE + "/pages/student/ajax/aatupload.php"
-        if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
-        elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
+        if aat_type == "Concept Video": 
+            ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
+        elif aat_type == "Tech Talk": 
+            ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
 
+        # 3. Make the request (THIS IS THE 'res' VARIABLE THAT WAS MISSING!)
         res = session.post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=10)
         check_auth(res)
         
+        # 4. Parse the HTML response
         soup = BeautifulSoup(res.text, 'html.parser')
         questions_text = ""
         question_pdf = ""
         answer_pdf = ""
         can_delete = False
         
-        cols = soup.find_all('td')
-        if len(cols) >= 3:
-            questions_text = cols[1].get_text(separator="\n", strip=True)
-            for a in cols[1].find_all("a", href=True):
-                if ".pdf" in a['href'].lower():
-                    question_pdf = a['href'] if a['href'].startswith("http") else urljoin(BASE, a['href'])
-            
-            for a in cols[2].find_all("a", href=True):
-                if "view" in a.get("title", "").lower() or "btn-success" in a.get("class", []) or "eye" in str(a).lower():
-                    answer_pdf = a['href']
-                    
-            if cols[2].find("button", class_=lambda c: c and ("del" in c.lower() or "danger" in c.lower())):
-                can_delete = True
+        # 5. Extract questions and buttons from the table
+        tbody = soup.find('tbody')
+        if tbody:
+            trs = tbody.find_all('tr')
+            if trs:
+                cols = trs[0].find_all('td')
+                
+                # Extract the written question text
+                if len(cols) >= 2:
+                    questions_text = cols[1].get_text(separator="\n", strip=True)
+                    for a in cols[1].find_all("a", href=True):
+                        if ".pdf" in a['href'].lower():
+                            question_pdf = a['href'] if a['href'].startswith("http") else urljoin(BASE, a['href'])
+                
+                # Check the 3rd column for Uploaded File link (Green Eye) and Delete button
+                if len(cols) >= 3:
+                    for a in cols[2].find_all("a", href=True):
+                        if "view" in a.get("title", "").lower() or "btn-success" in a.get("class", []) or "eye" in str(a).lower():
+                            answer_pdf = a['href']
+                            
+                    if cols[2].find("button", class_=lambda c: c and ("del" in c.lower() or "danger" in c.lower())):
+                        can_delete = True
 
         if not questions_text:
             questions_text = soup.get_text(separator="\n", strip=True)
@@ -297,8 +312,10 @@ def scrape_aat_questions(session, aat_type, subject_data):
             "answer_pdf": answer_pdf, 
             "can_delete": can_delete
         }
-    except SessionExpiredError: raise
-    except Exception as e: return {"ok": False, "error": str(e)}
+    except SessionExpiredError: 
+        raise
+    except Exception as e: 
+        return {"ok": False, "error": str(e)}
 
 # NOTE: Paste this route near the bottom of app.py with your other routes
 @app.route("/aat_delete", methods=["POST"])
