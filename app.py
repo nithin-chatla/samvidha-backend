@@ -319,8 +319,7 @@ def scrape_aat_questions(session, aat_type, subject_data):
         }
         
         ajax_url = BASE + "/pages/student/ajax/aatupload.php"
-        if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
-        elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
+        if aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
 
         res = session.post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=10)
         check_auth(res)
@@ -383,8 +382,9 @@ def scrape_aat_questions(session, aat_type, subject_data):
 def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=None, youtube_link=None):
     try:
         ajax_url = BASE + "/pages/student/ajax/aatupload.php"
-        if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
-        elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
+        
+        # Use master endpoint. Tech Talk might be different:
+        if aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
 
         upload_payload = {
             "subcode": (None, subject_data.get("code", "")),
@@ -1120,7 +1120,7 @@ def api_aat_delete():
     
     ajax_url = BASE + "/pages/student/ajax/aatupload.php"
     if aat_type == "Concept Video": 
-        ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
+        # For concept videos we mimic an overwrite to wipe the URL immediately using the master endpoint
         blank_payload = {
             "subcode": (None, subject_data.get("code", "")),
             "sem": (None, subject_data.get("sem", "")),
