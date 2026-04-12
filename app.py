@@ -396,11 +396,16 @@ def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=
             "action": (None, "upload_answer")
         }
         
+        # Override specifically for Concept Video as per portal JS requirements
+        if aat_type == "Concept Video":
+            upload_payload["action"] = (None, "Save")
+            upload_payload["sub_code"] = (None, subject_data.get("code", ""))
+
         if youtube_link:
             upload_payload['link_1'] = (None, youtube_link) 
             upload_payload['url'] = (None, youtube_link) 
-            upload_payload['video_link'] = (None, youtube_link)
-            upload_payload['fmv_url'] = (None, youtube_link)
+            upload_payload['video_link'] = (None, youtube_link) 
+            upload_payload['file_url'] = (None, youtube_link) # Official FMV param
         
         if file_bytes and filename:
             upload_payload['file_1'] = (filename, io.BytesIO(file_bytes), 'application/pdf') 
@@ -1119,26 +1124,7 @@ def api_aat_delete():
     file_id = data.get("file_id", "") 
     
     ajax_url = BASE + "/pages/student/ajax/aatupload.php"
-    if aat_type == "Concept Video": 
-        # For concept videos we mimic an overwrite to wipe the URL immediately using the master endpoint
-        blank_payload = {
-            "subcode": (None, subject_data.get("code", "")),
-            "sem": (None, subject_data.get("sem", "")),
-            "ay": (None, subject_data.get("ay", "")),
-            "aat_type": (None, subject_data.get("aat_type_param", "")),
-            "dept_id": (None, subject_data.get("dept_id", "")),
-            "action": (None, "upload_answer"),
-            "url": (None, ""),
-            "link_1": (None, ""),
-            "video_link": (None, "")
-        }
-        try:
-            SESSIONS[token].post(ajax_url, files=blank_payload, timeout=10)
-            return jsonify({"ok": True, "message": "Video link cleared!"})
-        except Exception as e:
-            return jsonify({"ok": False, "error": str(e)})
-            
-    elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
+    if aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
 
     payload = {
         "id": file_id,
@@ -1149,6 +1135,11 @@ def api_aat_delete():
         "aat_type": subject_data.get("aat_type_param", ""),
         "action": "delete_answer"
     }
+
+    # Override for Concept Video deletion as per JS source
+    if aat_type == "Concept Video":
+        payload["sub_code"] = subject_data.get("code", "")
+        payload["action"] = "Delete"
     
     try:
         res = SESSIONS[token].post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=10)
