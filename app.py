@@ -1292,6 +1292,77 @@ def api_lab_delete():
         return jsonify({"ok": False, "error": "Delete failed"})
     except Exception as e: return jsonify({"ok": False, "error": str(e)})
 
+@app.route("/aat_solve", methods=["POST"])
+def api_aat_solve():
+    token = require_token()
+    data = request.get_json() or {}
+    provider = data.get('provider')
+    api_key = data.get('api_key')
+    questions = data.get('questions')
+    subject = data.get('subject', 'Assignment')
+    aat_type = data.get('aat_type', 'AAT')
+
+    if not api_key: return jsonify({"ok": False, "error": "Missing API Key"}), 400
+
+    system_prompt = "You are an expert academic AI. Answer the following college assignment questions formally and comprehensively."
+    user_prompt = f"Subject: {subject}\nAssessment Type: {aat_type}\n\nQuestions:\n{questions}"
+    ai_response = "Error connecting to AI."
+
+    import requests
+
+    try:
+        if provider == 'Gemini':
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+            payload = {"contents": [{"role": "user", "parts": [{"text": system_prompt + "\n\n" + user_prompt}]}]}
+            res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}).json()
+            if 'candidates' in res and len(res['candidates']) > 0:
+                ai_response = res['candidates'][0]['content']['parts'][0]['text']
+            else: ai_response = str(res)
+
+        elif provider == 'OpenAI':
+            payload = {"model": "gpt-3.5-turbo", "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]}
+            res = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers={"Authorization": f"Bearer {api_key}"}).json()
+            if 'choices' in res: ai_response = res['choices'][0]['message']['content']
+            else: ai_response = str(res)
+                
+        elif provider == 'Groq':
+            payload = {"model": "llama3-8b-8192", "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]}
+            res = requests.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers={"Authorization": f"Bearer {api_key}"}).json()
+            if 'choices' in res: ai_response = res['choices'][0]['message']['content']
+            else: ai_response = str(res)
+                
+        elif provider == 'Claude':
+            payload = {"model": "claude-3-haiku-20240307", "max_tokens": 1024, "system": system_prompt, "messages": [{"role": "user", "content": user_prompt}]}
+            res = requests.post("https://api.anthropic.com/v1/messages", json=payload, headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"}).json()
+            if 'content' in res: ai_response = res['content'][0]['text']
+            else: ai_response = str(res)
+
+        # Simple PDF Generation using fpdf
+        from fpdf import FPDF
+        import base64
+        
+        class AI_PDF(FPDF):
+            def header(self):
+                self.set_font("helvetica", "B", 14)
+                clean_subj = subject.encode('latin-1', 'replace').decode('latin-1')
+                self.cell(0, 10, f"Automated AI Submission - {clean_subj}", border=False, ln=1, align="C")
+                self.ln(5)
+
+        pdf = AI_PDF()
+        pdf.add_page()
+        pdf.set_font("helvetica", size=12)
+        
+        clean_ans = ai_response.encode('latin-1', 'replace').decode('latin-1')
+        pdf.multi_cell(0, 8, clean_ans)
+        
+        pdf_bytes = pdf.output()
+        b64 = base64.b64encode(pdf_bytes).decode('utf-8')
+
+        return jsonify({"ok": True, "answer": ai_response, "pdf_base64": b64})
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
 @app.route("/", methods=["GET"])
 def home(): return jsonify({"status": "API is running"})
 
