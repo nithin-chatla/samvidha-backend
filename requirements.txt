@@ -7,4 +7,4 @@ PyMuPDF
 Flask-Cors
 Pillow
 aiohttp
-fpdf2==2.8.0
+fpdf2>=2.8.1
