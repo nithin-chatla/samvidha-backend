@@ -421,57 +421,189 @@ def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=
 # EXISTING SAMVIDHA SCRAPERS
 # ==========================================
 def scrape_profile(session, username):
-    profile_data = {"Header": {"Roll Number": username, "Full Name": "Student", "Department": "-"}, "Sections": {}, "Documents": {}}
-    
-    # Attempt 1: Scrape from typical profile actions (student_profile or profile)
-    for action in ["profile", "student_profile"]:
-        try:
-            r = session.get(BASE + f"/home?action={action}", timeout=10)
-            check_auth(r)
-            soup = BeautifulSoup(r.text, "html.parser")
-            
-            for tr in soup.find_all("tr"):
+    try:
+        r = session.get(BASE + "/home?action=profile", timeout=15)
+        check_auth(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        profile = {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
+        
+        header_card = soup.find("div", class_=lambda c: c and any(x in c.lower() for x in ['profile', 'user-info', 'card-body']))
+        if not header_card: header_card = soup
+        name = header_card.find(["h3", "h4", "h5", "strong"])
+        if name: profile["Header"]["Full Name"] = name.get_text(strip=True)
+        branch = header_card.find(["h5", "p"])
+        if branch: profile["Header"]["Department"] = branch.get_text(strip=True)
+
+        for table in soup.find_all("table"):
+            heading = table.find_previous(["h1", "h2", "h3", "h4", "h5", "h6", "div"], class_=lambda c: c and ('heading' in c.lower() or 'title' in c.lower() or 'panel-title' in c.lower()))
+            panel = table.find_parent(["div"], class_=lambda c: c and 'panel' in c.lower())
+            if panel and not heading:
+                heading = panel.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and 'heading' in c.lower())
+
+            section_name = heading.get_text(strip=True) if heading else "Other Details"
+            if not section_name or len(section_name) > 40: section_name = "Other Details"
+            if section_name not in profile["Sections"]: profile["Sections"][section_name] = {}
+
+            for tr in table.find_all("tr"):
                 cols = tr.find_all(["th", "td"])
                 if len(cols) >= 2:
-                    k1 = cols[0].get_text(strip=True).strip(":")
-                    v1 = cols[1].get_text(strip=True)
-                    if k1 and v1: profile_data["Header"][k1] = v1
-                if len(cols) >= 4:
-                    k2 = cols[2].get_text(strip=True).strip(":")
-                    v2 = cols[3].get_text(strip=True)
-                    if k2 and v2: profile_data["Header"][k2] = v2
+                    if cols[0].get_text(strip=True).isdigit() and len(cols) > 2:
+                        key = cols[1].get_text(strip=True).replace(":", "")
+                        val_elem = cols[-1]
+                    else:
+                        key = cols[0].get_text(strip=True).replace(":", "")
+                        val_elem = cols[1] if len(cols) == 2 else cols[-1]
                     
-            if "Student Name" in profile_data["Header"]:
-                profile_data["Header"]["Full Name"] = profile_data["Header"]["Student Name"]
-                
-            if profile_data["Header"]["Full Name"] != "Student":
-                return profile_data # Successfully extracted!
-                
-        except Exception:
-            pass
+                    if key.lower() in ["s.no", "sno", "#", "sl.no", ""]: continue
+                    
+                    a_tag = val_elem.find("a", href=True)
+                    if a_tag and "javascript" not in a_tag["href"].lower() and "#" not in a_tag["href"]:
+                        href = a_tag["href"]
+                        if href.startswith("/"): href = BASE + href
+                        elif not href.startswith("http"): href = BASE + "/" + href
+                        doc_name = val_elem.get_text(strip=True)
+                        if not doc_name or doc_name.lower() in ["view", "download", "-"]: doc_name = key
+                        profile["Documents"][doc_name] = href
+                        continue
+                        
+                    val = val_elem.get_text(separator=" ", strip=True)
+                    if val and val != "-" and len(key) < 50:
+                        profile["Sections"][section_name][key] = val
 
-    # Attempt 2: Fallback to extracting the name directly from the dashboard header
-    try:
-        r2 = session.get(BASE + "/home", timeout=10)
-        check_auth(r2)
-        import re
-        
-        # Usually looks like "Welcome, JOHN DOE (23951A0...)"
-        # or "JOHN DOE" inside a specific user profile block
-        match = re.search(r'(?i)Welcome[\s,]+([A-Z\s\.]+)\s*\(', r2.text)
-        if match:
-            profile_data["Header"]["Full Name"] = match.group(1).title().strip()
-            
-        # Extract department from Dashboard if possible (e.g. "B.Tech - CSE")
-        dept_match = re.search(r'(?i)(B\.Tech|M\.Tech|MBA)[^\w]*([A-Z]+)', r2.text)
-        if dept_match:
-            profile_data["Header"]["Department"] = f"{dept_match.group(1)} - {dept_match.group(2)}"
-            
+        for strong in soup.find_all(["strong", "b"]):
+            key = strong.get_text(strip=True).replace(":", "")
+            if not key or len(key) > 40: continue
+            parent = strong.parent
+            if parent.name in ["td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "a", "button"]: continue
+            text_content = parent.get_text(separator="\n", strip=True)
+            val = text_content.replace(strong.get_text(strip=True), "").strip().strip(":\n- ")
+            if val and len(val) > 0 and len(val) < 200:
+                panel = parent.find_parent(["div"], class_=lambda c: c and 'panel' in c.lower())
+                section_name = "Contacts"
+                if panel:
+                    heading = panel.find(["div", "h1", "h2", "h3", "h4", "h5", "h6"], class_=lambda c: c and 'heading' in c.lower())
+                    if heading: section_name = heading.get_text(strip=True)
+                if section_name not in profile["Sections"]: profile["Sections"][section_name] = {}
+                profile["Sections"][section_name][key] = val
+
+        empty_keys = [k for k, v in profile["Sections"].items() if not v]
+        for k in empty_keys: del profile["Sections"][k]
+        return profile
+    except SessionExpiredError: raise
     except Exception as e:
-        print(f"Fallback Backup Scrape Error: {e}")
-        
-    return profile_data
+        return {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}
 
+def scrape_timetable(session, ay=None, section=None):
+    try:
+        r = session.get(BASE + "/home?action=TT_std", timeout=15)
+        check_auth(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        
+        ays, sections = [], []
+        ay_input_name = "ay"
+        sec_input_name = "sec"
+        
+        sel_ay = soup.find('select', id=re.compile(r'ay', re.I)) or soup.find('select', {'name': re.compile(r'ay', re.I)})
+        if sel_ay:
+            ay_input_name = sel_ay.get('name', 'ay')
+            ays = [{'value': o.get('value', ''), 'label': o.get_text(strip=True)} for o in sel_ay.find_all('option') if o.get('value')]
+            
+        sel_sec = soup.find('select', id=re.compile(r'sec', re.I)) or soup.find('select', {'name': re.compile(r'sec', re.I)})
+        if sel_sec:
+            sec_input_name = sel_sec.get('name', 'sec')
+            sections = [{'value': o.get('value', ''), 'label': o.get_text(strip=True)} for o in sel_sec.find_all('option') if o.get('value')]
+
+        schedule, subjects = [], []
+        html_to_parse = r.text
+        
+        if ay and section:
+            try:
+                form_data = {
+                    ay_input_name: ay,
+                    sec_input_name: section,
+                    'action': 'TT_std',
+                    'submit': 'show',
+                    'show': 'show',
+                    'btnShow': 'show'
+                }
+                
+                form = soup.find('form')
+                if form:
+                    for inp in form.find_all('input', type='hidden'):
+                        if inp.get('name'):
+                            form_data[inp.get('name')] = inp.get('value', '')
+                            
+                    submit_btn = form.find('button', type='submit') or form.find('input', type='submit')
+                    if submit_btn and submit_btn.get('name'):
+                        form_data[submit_btn.get('name')] = submit_btn.get('value', '') or 'show'
+
+                res = session.post(BASE + "/home?action=TT_std", data=form_data, timeout=10)
+                if res.status_code == 200 and "Period" in res.text:
+                    html_to_parse = res.text
+            except: pass
+            
+            if "Period" not in html_to_parse:
+                ajax_urls = [
+                    BASE + "/pages/student/timetable/ajax/timetable.php",
+                    BASE + "/pages/student/time_table/ajax/timetable.php",
+                    BASE + "/pages/student/time_table/ajax/day2day.php",
+                    BASE + "/pages/student/tt/ajax/tt.php",
+                    BASE + "/pages/student/tt/ajax/timetable.php"
+                ]
+                headers = {'x-requested-with': 'XMLHttpRequest'}
+                for url in ajax_urls:
+                    for action in ['get_timetable', 'get_tt', 'show_tt', 'get_data', 'get_timetable_data']:
+                        try:
+                            payload = {'action': action, 'ay': ay, 'section': section, 'sec': section, ay_input_name: ay, sec_input_name: section}
+                            res = session.post(url, data=payload, headers=headers, timeout=5)
+                            if res.status_code == 200 and ("Period" in res.text or "Staff" in res.text):
+                                html_to_parse = res.text
+                                break
+                        except: pass
+                    if "Period" in html_to_parse: break
+
+        data_soup = BeautifulSoup(html_to_parse, "html.parser")
+        
+        for table in data_soup.find_all("table"):
+            header_text = table.get_text(separator=" ", strip=True).lower()
+            if "period - i" in header_text or "period" in header_text:
+                for tr in table.find_all("tr"):
+                    cols = tr.find_all(["th", "td"])
+                    if not cols: continue
+                    day_text = cols[0].get_text(separator=" ", strip=True)
+                    
+                    if any(d in day_text.lower() for d in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]):
+                        periods = []
+                        for col in cols[1:]:
+                            p_text = col.get_text(separator="\n", strip=True)
+                            if not p_text or p_text == "-":
+                                periods.append({"isFree": True, "subject": "-", "room": "", "faculty": ""})
+                            else:
+                                lines = [line.strip() for line in p_text.split('\n') if line.strip()]
+                                subject = lines[0] if len(lines) > 0 else "-"
+                                room = ""
+                                faculty = ""
+                                for line in lines[1:]:
+                                    if "Room" in line: room = line.replace("Room", "").replace(":", "").strip()
+                                    elif "Faculty" in line or "Staff" in line: faculty = line.replace("Faculty Id", "").replace("Faculty", "").replace(":", "").strip()
+                                periods.append({"isFree": False, "subject": subject, "room": room, "faculty": faculty})
+
+                        if periods: schedule.append({"day": day_text, "periods": periods})
+                            
+            elif "staff name" in header_text and "subject code" in header_text:
+                for tr in table.find_all("tr"):
+                    cols = tr.find_all("td")
+                    if len(cols) >= 5 and cols[0].get_text(strip=True).isdigit():
+                        subjects.append({
+                            "code": cols[1].get_text(strip=True),
+                            "name": cols[2].get_text(strip=True),
+                            "short": cols[3].get_text(strip=True) if len(cols) > 3 else "",
+                            "staff": cols[5].get_text(strip=True) if len(cols) > 5 else (cols[4].get_text(strip=True) if len(cols) > 4 else "")
+                        })
+                        
+        return {"ok": True, "ays": ays, "sections": sections, "schedule": schedule, "subjects": subjects}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "ays": [], "sections": [], "schedule": [], "subjects": []}
 def scrape_attendance(session):
     try:
         r = session.get(BASE + "/home?action=stud_att_STD", timeout=15)
