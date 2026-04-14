@@ -421,30 +421,56 @@ def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=
 # EXISTING SAMVIDHA SCRAPERS
 # ==========================================
 def scrape_profile(session, username):
-    try:
-        r = session.get(BASE + "/home?action=profile", timeout=15)
-        check_auth(r)
-        soup = BeautifulSoup(r.text, "html.parser")
-        profile_data = {"Header": {"Roll Number": username}, "Sections": {}, "Documents": {}}
-        for tr in soup.find_all("tr"):
-            cols = tr.find_all(["th", "td"])
-            if len(cols) >= 2:
-                k1 = cols[0].get_text(strip=True).strip(":")
-                v1 = cols[1].get_text(strip=True)
-                if k1 and v1:
-                    profile_data["Header"][k1] = v1
-            if len(cols) >= 4:
-                k2 = cols[2].get_text(strip=True).strip(":")
-                v2 = cols[3].get_text(strip=True)
-                if k2 and v2:
-                    profile_data["Header"][k2] = v2
+    profile_data = {"Header": {"Roll Number": username, "Full Name": "Student", "Department": "-"}, "Sections": {}, "Documents": {}}
+    
+    # Attempt 1: Scrape from typical profile actions (student_profile or profile)
+    for action in ["profile", "student_profile"]:
+        try:
+            r = session.get(BASE + f"/home?action={action}", timeout=10)
+            check_auth(r)
+            soup = BeautifulSoup(r.text, "html.parser")
+            
+            for tr in soup.find_all("tr"):
+                cols = tr.find_all(["th", "td"])
+                if len(cols) >= 2:
+                    k1 = cols[0].get_text(strip=True).strip(":")
+                    v1 = cols[1].get_text(strip=True)
+                    if k1 and v1: profile_data["Header"][k1] = v1
+                if len(cols) >= 4:
+                    k2 = cols[2].get_text(strip=True).strip(":")
+                    v2 = cols[3].get_text(strip=True)
+                    if k2 and v2: profile_data["Header"][k2] = v2
                     
-        if "Student Name" in profile_data["Header"]:
-             profile_data["Header"]["Full Name"] = profile_data["Header"]["Student Name"]
-        return profile_data
+            if "Student Name" in profile_data["Header"]:
+                profile_data["Header"]["Full Name"] = profile_data["Header"]["Student Name"]
+                
+            if profile_data["Header"]["Full Name"] != "Student":
+                return profile_data # Successfully extracted!
+                
+        except Exception:
+            pass
+
+    # Attempt 2: Fallback to extracting the name directly from the dashboard header
+    try:
+        r2 = session.get(BASE + "/home", timeout=10)
+        check_auth(r2)
+        import re
+        
+        # Usually looks like "Welcome, JOHN DOE (23951A0...)"
+        # or "JOHN DOE" inside a specific user profile block
+        match = re.search(r'(?i)Welcome[\s,]+([A-Z\s\.]+)\s*\(', r2.text)
+        if match:
+            profile_data["Header"]["Full Name"] = match.group(1).title().strip()
+            
+        # Extract department from Dashboard if possible (e.g. "B.Tech - CSE")
+        dept_match = re.search(r'(?i)(B\.Tech|M\.Tech|MBA)[^\w]*([A-Z]+)', r2.text)
+        if dept_match:
+            profile_data["Header"]["Department"] = f"{dept_match.group(1)} - {dept_match.group(2)}"
+            
     except Exception as e:
-        print(f"Profile Scrape Error: {e}")
-        return {"Header": {"Roll Number": username, "Full Name": "Student", "Department": "-"}}
+        print(f"Fallback Backup Scrape Error: {e}")
+        
+    return profile_data
 
 def scrape_attendance(session):
     try:
