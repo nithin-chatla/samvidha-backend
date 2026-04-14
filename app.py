@@ -420,6 +420,32 @@ def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=
 # ==========================================
 # EXISTING SAMVIDHA SCRAPERS
 # ==========================================
+def scrape_profile(session, username):
+    try:
+        r = session.get(BASE + "/home?action=profile", timeout=15)
+        check_auth(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        profile_data = {"Header": {"Roll Number": username}, "Sections": {}, "Documents": {}}
+        for tr in soup.find_all("tr"):
+            cols = tr.find_all(["th", "td"])
+            if len(cols) >= 2:
+                k1 = cols[0].get_text(strip=True).strip(":")
+                v1 = cols[1].get_text(strip=True)
+                if k1 and v1:
+                    profile_data["Header"][k1] = v1
+            if len(cols) >= 4:
+                k2 = cols[2].get_text(strip=True).strip(":")
+                v2 = cols[3].get_text(strip=True)
+                if k2 and v2:
+                    profile_data["Header"][k2] = v2
+                    
+        if "Student Name" in profile_data["Header"]:
+             profile_data["Header"]["Full Name"] = profile_data["Header"]["Student Name"]
+        return profile_data
+    except Exception as e:
+        print(f"Profile Scrape Error: {e}")
+        return {"Header": {"Roll Number": username, "Full Name": "Student", "Department": "-"}}
+
 def scrape_attendance(session):
     try:
         r = session.get(BASE + "/home?action=stud_att_STD", timeout=15)
@@ -1296,13 +1322,12 @@ def api_lab_delete():
 def api_aat_solve():
     token = require_token()
     data = request.get_json() or {}
-    provider = data.get('provider')
-    api_key = data.get('api_key')
+    api_key = os.environ.get("GLOBAL_AI_KEY")
     questions = data.get('questions')
     subject = data.get('subject', 'Assignment')
     aat_type = data.get('aat_type', 'AAT')
 
-    if not api_key: return jsonify({"ok": False, "error": "Missing API Key"}), 400
+    if not api_key: return jsonify({"ok": False, "error": "Backend API Key Not Configured"}), 400
 
     system_prompt = "You are an expert academic AI. Answer the following college assignment questions formally and comprehensively."
     user_prompt = f"Subject: {subject}\nAssessment Type: {aat_type}\n\nQuestions:\n{questions}"
@@ -1311,31 +1336,12 @@ def api_aat_solve():
     import requests
 
     try:
-        if provider == 'Gemini':
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-            payload = {"contents": [{"role": "user", "parts": [{"text": system_prompt + "\n\n" + user_prompt}]}]}
-            res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}).json()
-            if 'candidates' in res and len(res['candidates']) > 0:
-                ai_response = res['candidates'][0]['content']['parts'][0]['text']
-            else: ai_response = str(res)
-
-        elif provider == 'OpenAI':
-            payload = {"model": "gpt-3.5-turbo", "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]}
-            res = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers={"Authorization": f"Bearer {api_key}"}).json()
-            if 'choices' in res: ai_response = res['choices'][0]['message']['content']
-            else: ai_response = str(res)
-                
-        elif provider == 'Groq':
-            payload = {"model": "llama3-8b-8192", "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]}
-            res = requests.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers={"Authorization": f"Bearer {api_key}"}).json()
-            if 'choices' in res: ai_response = res['choices'][0]['message']['content']
-            else: ai_response = str(res)
-                
-        elif provider == 'Claude':
-            payload = {"model": "claude-3-haiku-20240307", "max_tokens": 1024, "system": system_prompt, "messages": [{"role": "user", "content": user_prompt}]}
-            res = requests.post("https://api.anthropic.com/v1/messages", json=payload, headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"}).json()
-            if 'content' in res: ai_response = res['content'][0]['text']
-            else: ai_response = str(res)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        payload = {"contents": [{"role": "user", "parts": [{"text": system_prompt + "\n\n" + user_prompt}]}]}
+        res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}).json()
+        if 'candidates' in res and len(res['candidates']) > 0:
+            ai_response = res['candidates'][0]['content']['parts'][0]['text']
+        else: ai_response = str(res)
 
         return jsonify({"ok": True, "answer": ai_response})
     except Exception as e:
