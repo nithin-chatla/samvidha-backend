@@ -592,6 +592,259 @@ def scrape_memos(session, username):
         print(f"Memos Error: {e}")
     return []
 
+# ==========================================
+# ALTERNATIVE ASSESSMENTS (AAI / AAT) SCRAPERS
+# ==========================================
+def scrape_aat_list(session, aat_type):
+    actions = {
+        "AAT-1": "upload_aat_cs",
+        "AAT-2": "upload_aat_2",
+        "Concept Video": "aatfmv_upload",
+        "Tech Talk": "aat_upload"
+    }
+    action = actions.get(aat_type)
+    if not action: return {"ok": False, "error": "Invalid AAT type requested"}
+
+    try:
+        r = session.get(BASE + f"/home?action={action}", timeout=15)
+        check_auth(r)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        
+        last_date = "2026-12-31" 
+        m_date = re.search(r'(\d{2}-\d{2}-\d{4})', r.text)
+        if m_date:
+            parts = m_date.group(1).split('-')
+            if len(parts) == 3: last_date = f"{parts[2]}-{parts[1]}-{parts[0]}"
+            
+        subjects = []
+        for tr in soup.find_all("tr"):
+            cols = tr.find_all("td")
+            if len(cols) >= 5:
+                if aat_type == "Concept Video":
+                    sub_code = cols[1].get_text(strip=True)
+                    course_name = cols[2].get_text(strip=True)
+                    question = cols[3].get_text(strip=True)
+                    
+                    sem, ay, aat_type_param, dept_id = "", "", "", ""
+                    btn = tr.find(["button", "a", "input"])
+                    if btn:
+                        sem = btn.get("data-sem", "")
+                        ay = btn.get("data-ay", "")
+                        aat_type_param = btn.get("data-aat_type", "")
+                        dept_id = btn.get("data-dept", "")
+                    
+                    status = "Pending"
+                    video_link = ""
+                    file_id = ""
+                    can_delete = False
+                    url_cell_html = str(cols[4]).lower()
+                    
+                    input_tag = cols[4].find('input', type="text")
+                    if input_tag:
+                        val = input_tag.get('value', '').strip()
+                        if val.startswith('http'): video_link = val
+                        
+                    for a_tag in cols[4].find_all('a', href=True):
+                        href = a_tag['href']
+                        if "youtu" in href.lower() or "drive" in href.lower() or href.startswith("http"):
+                            if not video_link: video_link = href
+                            
+                    if len(video_link) > 5 or "already uploaded" in url_cell_html or "view" in url_cell_html or "success" in url_cell_html:
+                        status = "Submitted"
+                        
+                    del_btn = cols[4].find(["button", "a"], class_=lambda c: c and ("del" in c.lower() or "danger" in c.lower()))
+                    if del_btn: can_delete = True
+                    
+                    for inp in cols[4].find_all('input', type='hidden'):
+                        if "fileid_" in inp.get("id", "") or "fileid_" in inp.get("name", ""):
+                            file_id = inp.get("value", "")
+
+                    subjects.append({
+                        "code": sub_code,
+                        "name": course_name,
+                        "sem": sem,
+                        "ay": ay,
+                        "aat_type_param": "FMV", 
+                        "dept_id": dept_id,
+                        "last_date": last_date, 
+                        "status": status, 
+                        "marks": "-",
+                        "question": question,
+                        "video_link": video_link,
+                        "file_id": file_id,
+                        "can_delete": can_delete
+                    })
+                else:
+                    btn = tr.find("button")
+                    if btn:
+                        sub_code = btn.get("data-sub_code", "")
+                        sem = btn.get("data-sem", "")
+                        ay = btn.get("data-ay", "")
+                        aat_type_param = btn.get("data-aat_type", "")
+                        dept_id = btn.get("data-dept", "")
+                        course_name = cols[2].get_text(strip=True)
+                        
+                        subjects.append({
+                            "code": sub_code,
+                            "name": course_name,
+                            "sem": sem,
+                            "ay": ay,
+                            "aat_type_param": aat_type_param,
+                            "dept_id": dept_id,
+                            "last_date": last_date, 
+                            "status": "Pending", 
+                            "marks": "-"
+                        })
+
+        import concurrent.futures
+        def fetch_status(subj):
+            payload = {
+                "sub_code": subj["code"],
+                "sem": subj["sem"],
+                "ay": subj["ay"],
+                "aat_type": subj["aat_type_param"],
+                "dept_id": subj["dept_id"],
+                "last_date": subj["last_date"], 
+                "action": "get_aat_question"
+            }
+            ajax_url = BASE + "/pages/student/ajax/aatupload.php"
+            if aat_type == "Concept Video": ajax_url = BASE + "/pages/student/ajax/aatfmvupload.php"
+            elif aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
+
+            try:
+                res = session.post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=5)
+                if res.status_code == 200:
+                    html = res.text.lower()
+                    if "btn-success" in html or "fa-eye" in html or "already uploaded" in html:
+                        subj["status"] = "Submitted"
+                    if "evaluated" in html:
+                        subj["status"] = "Evaluated"
+                        soup_res = BeautifulSoup(res.text, 'html.parser')
+                        for td in soup_res.find_all('td'):
+                            t = td.get_text(strip=True)
+                            if t.isdigit() or t.replace('.','',1).isdigit():
+                                subj["marks"] = t
+            except: pass
+            return subj
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            subjects = list(executor.map(fetch_status, subjects))
+            
+        return {"ok": True, "subjects": subjects}
+    except SessionExpiredError: raise
+    except Exception as e: return {"ok": False, "error": str(e)}
+
+def scrape_aat_questions(session, aat_type, subject_data):
+    try:
+        payload = {
+            "sub_code": subject_data.get("code", ""),
+            "sem": subject_data.get("sem", ""),
+            "ay": subject_data.get("ay", ""),
+            "aat_type": subject_data.get("aat_type_param", ""),
+            "dept_id": subject_data.get("dept_id", ""),
+            "last_date": subject_data.get("last_date", "2026-12-31"), 
+            "action": "get_aat_question"
+        }
+        
+        ajax_url = BASE + "/pages/student/ajax/aatupload.php"
+        if aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
+
+        res = session.post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=10)
+        check_auth(res)
+        
+        soup = BeautifulSoup(res.text, 'html.parser')
+        questions_text = ""
+        question_pdf = ""
+        answer_pdf = ""
+        answer_video = ""
+        can_delete = False
+        
+        tbody = soup.find('tbody')
+        if tbody:
+            trs = tbody.find_all('tr')
+            if trs:
+                cols = trs[0].find_all('td')
+                if len(cols) >= 2:
+                    questions_text = cols[1].get_text(separator="\n", strip=True)
+                    for a in cols[1].find_all("a", href=True):
+                        if ".pdf" in a['href'].lower():
+                            question_pdf = a['href'] if a['href'].startswith("http") else urljoin(BASE, a['href'])
+                
+                # Check for uploaded content in the last column
+                if len(cols) >= 3:
+                    for a in cols[2].find_all("a", href=True):
+                        href = a['href']
+                        title_lower = a.get("title", "").lower()
+                        class_lower = " ".join(a.get("class", [])).lower()
+                        
+                        if "youtube" in href.lower() or "youtu.be" in href.lower() or "drive" in href.lower() or "video" in title_lower:
+                            answer_video = href
+                        elif "view" in title_lower or "btn-success" in class_lower or "eye" in str(a).lower():
+                            answer_pdf = href
+                            
+                    if cols[2].find("button", class_=lambda c: c and ("del" in c.lower() or "danger" in c.lower())):
+                        can_delete = True
+
+        if not questions_text:
+            questions_text = soup.get_text(separator="\n", strip=True)
+            
+        # CRITICAL FIX: Safe extraction of the hidden file_id required for deletion
+        file_id = ""
+        for inp in soup.find_all("input", type="hidden"):
+            if "fileid_" in inp.get("id", "") or "fileid_" in inp.get("name", ""):
+                file_id = inp.get("value", "")
+                break
+            
+        return {
+            "ok": True, 
+            "questions": questions_text, 
+            "question_pdf": question_pdf, 
+            "answer_pdf": answer_pdf, 
+            "answer_video": answer_video, 
+            "file_id": file_id,
+            "can_delete": can_delete
+        }
+    except SessionExpiredError: raise
+    except Exception as e: return {"ok": False, "error": str(e)}
+
+def upload_aat_logic(session, aat_type, subject_data, file_bytes=None, filename=None, youtube_link=None):
+    try:
+        ajax_url = BASE + "/pages/student/ajax/aatupload.php"
+        
+        # Use master endpoint. Tech Talk might be different:
+        if aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
+
+        upload_payload = {
+            "subcode": (None, subject_data.get("code", "")),
+            "sem": (None, subject_data.get("sem", "")),
+            "ay": (None, subject_data.get("ay", "")),
+            "c_year": (None, subject_data.get("ay", "")),
+            "aat_type": (None, subject_data.get("aat_type_param", "")),
+            "dept_id": (None, subject_data.get("dept_id", "")),
+            "action": (None, "upload_answer")
+        }
+        
+        # Override specifically for Concept Video as per portal JS requirements
+        if aat_type == "Concept Video":
+            upload_payload["action"] = (None, "Save")
+            upload_payload["sub_code"] = (None, subject_data.get("code", ""))
+
+        if youtube_link:
+            upload_payload['link_1'] = (None, youtube_link) 
+            upload_payload['url'] = (None, youtube_link) 
+            upload_payload['video_link'] = (None, youtube_link) 
+            upload_payload['file_url'] = (None, youtube_link) # Official FMV param
+        
+        if file_bytes and filename:
+            upload_payload['file_1'] = (filename, io.BytesIO(file_bytes), 'application/pdf') 
+
+        res = session.post(ajax_url, files=upload_payload, timeout=30)
+        check_auth(res)
+        
+        return {"ok": True, "message": "Uploaded successfully to Samvidha!"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 def scrape_profile(session, username):
     try:
         r = session.get(BASE + "/home?action=profile", timeout=15)
@@ -1098,6 +1351,79 @@ def api_faculty():
     except Exception as e:
         return jsonify({"ok": False, "error": "Faculty data not found on server."})
 
+@app.route("/aat_list", methods=["POST"])
+def api_aat_list():
+    token = require_token()
+    data = request.get_json() or {}
+    return jsonify(scrape_aat_list(SESSIONS[token], data.get("type")))
+
+@app.route("/aat_questions", methods=["POST"])
+def api_aat_questions():
+    token = require_token()
+    data = request.get_json() or {}
+    return jsonify(scrape_aat_questions(SESSIONS[token], data.get("type"), data.get("subject_data")))
+
+@app.route("/aat_upload", methods=["POST"])
+def api_aat_upload():
+    token = require_token()
+    aat_type = request.form.get("type")
+    
+    subject_data = {
+        "code": request.form.get("code"),
+        "sem": request.form.get("sem"),
+        "ay": request.form.get("ay"),
+        "aat_type_param": request.form.get("aat_type_param"),
+        "dept_id": request.form.get("dept_id")
+    }
+    youtube_link = request.form.get("youtube_link")
+    
+    file_bytes = None
+    filename = None
+    if 'aat_file' in request.files:
+        f = request.files['aat_file']
+        file_bytes = f.read()
+        filename = f.filename
+        
+        if len(file_bytes) > 1024 * 1024:
+            try: file_bytes = rasterize_and_compress_pdf(file_bytes)
+            except Exception: pass
+            if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large."}), 400
+
+    return jsonify(upload_aat_logic(SESSIONS[token], aat_type, subject_data, file_bytes, filename, youtube_link))
+
+@app.route("/aat_delete", methods=["POST"])
+def api_aat_delete():
+    token = require_token()
+    data = request.get_json() or {}
+    aat_type = data.get("type")
+    subject_data = data.get("subject_data", {})
+    file_id = data.get("file_id", "") 
+    
+    ajax_url = BASE + "/pages/student/ajax/aatupload.php"
+    if aat_type == "Tech Talk": ajax_url = BASE + "/pages/student/ajax/aatupload_tt.php"
+
+    payload = {
+        "id": file_id,
+        "c_year": subject_data.get("ay", ""),
+        "subcode": subject_data.get("code", ""),
+        "sem": subject_data.get("sem", ""),
+        "ay": subject_data.get("ay", ""),
+        "aat_type": subject_data.get("aat_type_param", ""),
+        "action": "delete_answer"
+    }
+
+    # Override for Concept Video deletion as per JS source
+    if aat_type == "Concept Video":
+        payload["sub_code"] = subject_data.get("code", "")
+        payload["action"] = "Delete"
+    
+    try:
+        res = SESSIONS[token].post(ajax_url, data=payload, headers={"x-requested-with": "XMLHttpRequest"}, timeout=10)
+        return jsonify({"ok": True, "message": "Deleted successfully!"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
 @app.route("/all", methods=["GET"])
 def api_all():
     token = require_token()
@@ -1242,6 +1568,99 @@ def api_lab_delete():
         if res.json().get("status") == "success": return jsonify({"ok": True, "message": "Deleted successfully!"})
         return jsonify({"ok": False, "error": "Delete failed"})
     except Exception as e: return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/aat_solve", methods=["POST"])
+def api_aat_solve():
+    token = require_token()
+    data = request.get_json() or {}
+    api_key = os.environ.get("GLOBAL_AI_KEY")
+    questions = data.get('questions')
+    subject = data.get('subject', 'Assignment')
+    aat_type = data.get('aat_type', 'AAT')
+
+    if not api_key: return jsonify({"ok": False, "error": "Backend API Key Not Configured"}), 400
+
+    system_prompt = "You are an expert academic AI. Answer the following college assignment questions formally and comprehensively."
+    user_prompt = f"Subject: {subject}\nAssessment Type: {aat_type}\n\nQuestions:\n{questions}"
+    ai_response = "Error connecting to AI."
+
+    import requests
+
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        payload = {"contents": [{"role": "user", "parts": [{"text": system_prompt + "\n\n" + user_prompt}]}]}
+        res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}).json()
+        if 'candidates' in res and len(res['candidates']) > 0:
+            ai_response = res['candidates'][0]['content']['parts'][0]['text']
+        else: ai_response = str(res)
+
+        return jsonify({"ok": True, "answer": ai_response})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/aat_wrap_document", methods=["POST"])
+def api_aat_wrap_document():
+    token = require_token()
+    data = request.get_json() or {}
+    text = data.get('text', '')
+    doc_format = data.get('format', 'pdf')
+    subject = data.get('subject', 'Assignment')
+
+    import base64
+    import io
+
+    try:
+        if doc_format == 'pdf':
+            from fpdf import FPDF
+            class AI_PDF(FPDF):
+                def header(self):
+                    self.set_font("helvetica", "B", 14)
+                    clean_subj = subject.encode('latin-1', 'replace').decode('latin-1')
+                    self.cell(0, 10, f"Automated AI Submission - {clean_subj}", border=False, ln=1, align="C")
+                    self.ln(5)
+            pdf = AI_PDF()
+            pdf.add_page()
+            pdf.set_font("helvetica", size=12)
+            clean_ans = text.encode('latin-1', 'replace').decode('latin-1')
+            pdf.multi_cell(0, 8, clean_ans)
+            pdf_bytes = pdf.output()
+            b64 = base64.b64encode(pdf_bytes).decode('utf-8')
+            return jsonify({"ok": True, "file_base64": b64, "ext": "pdf"})
+
+        elif doc_format == 'docx':
+            import docx
+            doc = docx.Document()
+            doc.add_heading(f"Automated AI Submission - {subject}", level=1)
+            doc.add_paragraph(text)
+            bio = io.BytesIO()
+            doc.save(bio)
+            b64 = base64.b64encode(bio.getvalue()).decode('utf-8')
+            return jsonify({"ok": True, "file_base64": b64, "ext": "docx"})
+
+        elif doc_format == 'pptx':
+            from pptx import Presentation
+            prs = Presentation()
+            title_slide = prs.slides.add_slide(prs.slide_layouts[0])
+            title_slide.shapes.title.text = f"Automated AI Submission\n{subject}"
+            title_slide.placeholders[1].text = "Generated by AI"
+
+            paragraphs = text.split('\n\n')
+            for p in paragraphs:
+                if not p.strip(): continue
+                slide = prs.slides.add_slide(prs.slide_layouts[1])
+                slide.shapes.title.text = subject
+                slide.placeholders[1].text = p.strip()
+            
+            bio = io.BytesIO()
+            prs.save(bio)
+            b64 = base64.b64encode(bio.getvalue()).decode('utf-8')
+            return jsonify({"ok": True, "file_base64": b64, "ext": "pptx"})
+
+        else:
+            return jsonify({"ok": False, "error": "Invalid format requested."})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
 
 @app.route("/", methods=["GET"])
 def home(): return jsonify({"status": "API is running"})
