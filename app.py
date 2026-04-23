@@ -20,7 +20,6 @@ try:
 except ImportError:
     fitz = None
     Image = None
-    ImageFilter = None
 
 app = Flask(__name__)
 CORS(app)
@@ -1275,19 +1274,18 @@ def compress_scanned_pdf(file_bytes, target_kb=1024):
                 alpha=False,
                 colorspace=fitz.csRGB
             )
-
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-            # 🔥 Better grayscale + contrast
+            # Better grayscale + contrast
             img = img.convert("L").point(lambda x: x * 0.9)
-
-            # 🔥 Sharpen text
+            # Sharpen text
             img = img.filter(ImageFilter.SHARPEN)
-
             images.append(img)
 
-        output_io = io.BytesIO()
+        if not images:
+            doc.close()
+            return file_bytes
 
+        output_io = io.BytesIO()
         images[0].save(
             output_io,
             format="PDF",
@@ -1295,20 +1293,19 @@ def compress_scanned_pdf(file_bytes, target_kb=1024):
             save_all=True,
             append_images=images[1:],
             quality=quality,
-            subsampling=0,     # IMPORTANT for text clarity
+            subsampling=0,
             optimize=True,
             progressive=True
         )
 
         size_kb = len(output_io.getvalue()) / 1024
-        print(f"Trying → Size: {size_kb:.2f} KB | Q:{quality} | Z:{zoom} | DPI:{resolution}")
+        print(f"Compressing PDF → Size: {size_kb:.2f} KB | Q:{quality} | Z:{zoom} | DPI:{resolution}")
 
-        # ✅ Stop when under 1MB
         if size_kb <= target_kb:
             doc.close()
             return output_io.getvalue()
 
-        # 🎯 Smart reduction (preserve clarity first)
+        # Smart reduction — preserve clarity first
         if quality > 65:
             quality -= 5
         elif resolution > 160:
@@ -1434,7 +1431,7 @@ def api_aat_upload():
         
         if len(file_bytes) > 1024 * 1024:
             try: file_bytes = compress_scanned_pdf(file_bytes)
-            except Exception as e: print(f"Compression error: {e}")
+            except Exception: pass
             if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large."}), 400
 
     return jsonify(upload_aat_logic(SESSIONS[token], aat_type, subject_data, file_bytes, filename, youtube_link))
@@ -1592,7 +1589,7 @@ def api_lab_upload():
     file_bytes = f.read()
     if len(file_bytes) > 1024 * 1024:
         try: file_bytes = compress_scanned_pdf(file_bytes)
-        except Exception as e: print(f"Compression error: {e}")
+        except Exception: pass
         if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large. Please compress manually."}), 400
     rollno = request.form.get('rollno', '').upper()
     week_no = request.form.get('week_no', '')
