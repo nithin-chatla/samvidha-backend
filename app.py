@@ -1257,44 +1257,35 @@ def scrape_qp_data(session, select_name, exam_code):
         return {"ok": False, "records": [], "error": str(e)}
 
 def rasterize_and_compress_pdf(file_bytes):
-    if not fitz or not Image:
-        raise Exception("PyMuPDF/Pillow missing.")
+    if not fitz or not Image: raise Exception("PyMuPDF/Pillow missing.")
 
     import io
     from PIL import ImageFilter, ImageEnhance
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
 
-    # Start high quality
-    zoom = 1.7
-    quality = 85
-    resolution = 220
+    # 🔥 Start with high clarity
+    zoom = 1.6
+    quality = 75
+    resolution = 200
 
     while True:
         images = []
         zoom_matrix = fitz.Matrix(zoom, zoom)
 
         for page in doc:
-            pix = page.get_pixmap(
-                matrix=zoom_matrix,
-                alpha=False,
-                colorspace=fitz.csRGB
-            )
-
+            pix = page.get_pixmap(matrix=zoom_matrix, alpha=False, colorspace=fitz.csRGB)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-            # 🔥 Convert to grayscale (keeps clarity, reduces size)
-            img = img.convert("L")
+            # 🔥 Anti-blur processing
+            img = img.convert("L")  # grayscale (reduces size, keeps clarity)
+            img = img.filter(ImageFilter.MedianFilter(3))  # denoise
 
-            # 🔥 Denoise (removes scan noise → better compression)
-            img = img.filter(ImageFilter.MedianFilter(size=3))
+            # contrast boost (better readability)
+            img = ImageEnhance.Contrast(img).enhance(1.25)
 
-            # 🔥 Increase contrast (text becomes darker)
-            enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(1.3)
-
-            # 🔥 Sharpen (restore edges)
-            img = img.filter(ImageFilter.UnsharpMask(radius=1.5, percent=150))
+            # sharp edges (VERY important for text)
+            img = img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=140))
 
             images.append(img)
 
@@ -1311,27 +1302,26 @@ def rasterize_and_compress_pdf(file_bytes):
             save_all=True,
             append_images=images[1:],
             quality=quality,
-            subsampling=0,   # 🔥 VERY IMPORTANT → prevents blur
-            optimize=True,
-            progressive=True
+            subsampling=0,   # 🔥 prevents blur
+            optimize=True
         )
 
-        # ✅ Stop when < 1MB
+        # ✅ SAME return style as your old code
         if len(output_io.getvalue()) <= 1024 * 1024:
             doc.close()
             return output_io.getvalue()
 
-        # 🔻 Smart reduction (preserve clarity first)
+        # 🔻 Smart multi-loop compression (no blur priority)
         if quality > 65:
-            quality -= 5
-        elif resolution > 170:
-            resolution -= 10
-        elif zoom > 1.4:
-            zoom -= 0.1
+            quality -= 5           # safest reduction
+        elif resolution > 160:
+            resolution -= 10       # slight DPI drop
+        elif zoom > 1.35:
+            zoom -= 0.1            # last option (avoid blur)
         else:
-            quality -= 5
+            quality -= 5           # final push
 
-        # 🛑 Safety exit
+        # 🛑 safety exit
         if quality <= 45:
             doc.close()
             return output_io.getvalue()
