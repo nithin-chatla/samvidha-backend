@@ -16,7 +16,7 @@ from urllib.parse import urljoin
 
 try:
     import fitz  # PyMuPDF
-    from PIL import Image, ImageFilter
+    from PIL import Image
 except ImportError:
     fitz = None
     Image = None
@@ -1256,112 +1256,59 @@ def scrape_qp_data(session, select_name, exam_code):
     except Exception as e:
         return {"ok": False, "records": [], "error": str(e)}
 
-def compress_scanned_pdf(file_bytes, target_kb=1024):
-    # If the file is already less than or equal to 1 MB, no need to compress.
-    if len(file_bytes) <= target_kb * 1024:
-        return file_bytes
-
-    if not fitz or not Image: 
+def rasterize_and_compress_pdf(file_bytes):
+    if not fitz or not Image:
         raise Exception("PyMuPDF/Pillow missing.")
-        
+
+    import io
+    from PIL import ImageFilter
+
     doc = fitz.open(stream=file_bytes, filetype="pdf")
-    num_pages = len(doc)
-    if num_pages == 0:
+    images = []
+
+    # 🔥 Better resolution (avoid blur)
+    zoom_matrix = fitz.Matrix(1.5, 1.5)
+
+    for page in doc:
+        pix = page.get_pixmap(
+            matrix=zoom_matrix,
+            alpha=False,
+            colorspace=fitz.csRGB
+        )
+
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+        # 🔥 Improve scanned text quality
+        img = img.convert("L").point(lambda x: x * 0.9)   # better contrast
+        img = img.filter(ImageFilter.SHARPEN)             # sharpen text
+
+        images.append(img)
+
+    if not images:
         return file_bytes
 
-    # Initial high-quality settings
-    zoom = 1.8
-    quality = 80
-    resolution = 200
-    
-    max_attempts = 4 # Safety limit to avoid 60s proxy timeout
+    output_io = io.BytesIO()
 
-    for attempt in range(max_attempts):
-        zoom_matrix = fitz.Matrix(zoom, zoom)
-
-        def process_page(page_num):
-            page = doc[page_num]
-            # Prevent excessive memory usage if page is already huge
-            rect = page.rect
-            page_max_dim = max(rect.width, rect.height)
-            actual_zoom = zoom
-            if page_max_dim * zoom > 3000:
-                actual_zoom = 3000 / page_max_dim
-                
-            matrix = fitz.Matrix(actual_zoom, actual_zoom)
-            pix = page.get_pixmap(matrix=matrix, alpha=False, colorspace=fitz.csRGB)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            
-            # Explicitly free PyMuPDF pixmap memory immediately
-            pix = None
-
-            # Fast contrast boost and grayscale, back to RGB for JPEG compatibility
-            img = img.convert("L").point(lambda x: int(x * 0.9)).convert("RGB")
-            
-            # Only sharpen on high quality attempts to save processing time
-            if quality > 50:
-                img = img.filter(ImageFilter.SHARPEN)
-            return img
-
-        def get_images():
-            for i in range(1, num_pages):
-                yield process_page(i)
-
-        output_io = io.BytesIO()
-        first_img = process_page(0)
-
-        # Optimize subsampling based on quality to save massive space
-        subsampling_val = 0 if quality > 60 else 1
-
-        first_img.save(
-            output_io,
-            format="PDF",
-            resolution=resolution,
-            save_all=True,
-            append_images=get_images(),
-            quality=quality,
-            subsampling=subsampling_val,
-            optimize=True
-        )
-        
-        # Free memory of first image immediately
-        first_img = None
-
-        size_kb = len(output_io.getvalue()) / 1024
-        print(f"Attempt {attempt+1} → Size: {size_kb:.2f} KB | Q:{quality} | Z:{zoom}")
-
-        # ✅ Stop when under target
-        if size_kb <= target_kb:
-            doc.close()
-            return output_io.getvalue()
-
-        # 🎯 Aggressively reduce parameters for next attempt to guarantee fast finish
-        ratio = size_kb / target_kb
-        if ratio > 3.0:
-            zoom = max(0.8, zoom * 0.6)
-            quality = max(30, quality - 30)
-            resolution = max(100, resolution - 50)
-        elif ratio > 2.0:
-            zoom = max(1.0, zoom * 0.75)
-            quality = max(40, quality - 20)
-            resolution = max(120, resolution - 40)
-        elif ratio > 1.5:
-            zoom = max(1.2, zoom * 0.85)
-            quality = max(50, quality - 15)
-            resolution = max(150, resolution - 20)
-        else:
-            zoom = max(1.2, zoom - 0.2)
-            quality = max(40, quality - 10)
-            resolution = max(150, resolution - 20)
+    images[0].save(
+        output_io,
+        format="PDF",
+        resolution=200.0,      # higher DPI
+        save_all=True,
+        append_images=images[1:],
+        quality=75,            # balanced quality
+        subsampling=0,         # 🔥 prevents blur
+        optimize=True,
+        progressive=True
+    )
 
     doc.close()
     return output_io.getvalue()
 
 def require_token():
     h = request.headers.get("Authorization", "")
-    if not h.startswith("Bearer "): raise SessionExpiredError("Missing token")
+    if not h.startswith("Bearer "): abort(401)
     token = h.split(" ")[1]
-    if token not in TOKENS: raise SessionExpiredError("Invalid or expired token")
+    if token not in TOKENS: abort(401)
     return token
 
 @app.route("/check_update", methods=["GET"])
@@ -1472,12 +1419,9 @@ def api_aat_upload():
         filename = f.filename
         
         if len(file_bytes) > 1024 * 1024:
-            try: 
-                file_bytes = compress_scanned_pdf(file_bytes)
-            except Exception as e: 
-                return jsonify({"ok": False, "error": f"Compression Error: {str(e)}"}), 200
-            if len(file_bytes) > 1024 * 1024: 
-                return jsonify({"ok": False, "error": "PDF too large even after compression. Max 1MB."}), 200
+            try: file_bytes = rasterize_and_compress_pdf(file_bytes)
+            except Exception: pass
+            if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large."}), 400
 
     return jsonify(upload_aat_logic(SESSIONS[token], aat_type, subject_data, file_bytes, filename, youtube_link))
 
@@ -1633,12 +1577,9 @@ def api_lab_upload():
     f = request.files['prog_doc']
     file_bytes = f.read()
     if len(file_bytes) > 1024 * 1024:
-        try: 
-            file_bytes = compress_scanned_pdf(file_bytes)
-        except Exception as e: 
-            return jsonify({"ok": False, "error": f"Compression Error: {str(e)}"}), 200
-        if len(file_bytes) > 1024 * 1024: 
-            return jsonify({"ok": False, "error": "PDF too large even after compression. Max 1MB."}), 200
+        try: file_bytes = rasterize_and_compress_pdf(file_bytes)
+        except Exception: pass
+        if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large. Please compress manually."}), 400
     rollno = request.form.get('rollno', '').upper()
     week_no = request.form.get('week_no', '')
     upload_payload['prog_doc'] = (f"{rollno}_week{week_no}.pdf" if rollno and week_no else f.filename, io.BytesIO(file_bytes), 'application/pdf')
