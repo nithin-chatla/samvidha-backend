@@ -16,7 +16,7 @@ from urllib.parse import urljoin
 
 try:
     import fitz  # PyMuPDF
-    from PIL import Image
+    from PIL import Image, ImageFilter
 except ImportError:
     fitz = None
     Image = None
@@ -1256,39 +1256,35 @@ def scrape_qp_data(session, select_name, exam_code):
     except Exception as e:
         return {"ok": False, "records": [], "error": str(e)}
 
-def rasterize_and_compress_pdf(file_bytes):
+def compress_scanned_pdf(file_bytes, target_kb=1024):
     if not fitz or not Image: raise Exception("PyMuPDF/Pillow missing.")
-
-    import io
-    from PIL import ImageFilter, ImageEnhance
-
     doc = fitz.open(stream=file_bytes, filetype="pdf")
 
-    # 🔥 Start with high clarity
-    zoom = 1.6
-    quality = 75
-    resolution = 200
+    zoom = 1.8        # high clarity
+    quality = 85      # start high
+    resolution = 220  # DPI
 
     while True:
         images = []
         zoom_matrix = fitz.Matrix(zoom, zoom)
 
         for page in doc:
-            pix = page.get_pixmap(matrix=zoom_matrix, alpha=False, colorspace=fitz.csRGB)
+            pix = page.get_pixmap(
+                matrix=zoom_matrix,
+                alpha=False,
+                colorspace=fitz.csRGB
+            )
+
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-            # 🔥 Anti-blur processing
-            img = img.convert("L")  # grayscale (reduces size, keeps clarity)
-            img = img.filter(ImageFilter.MedianFilter(3))  # denoise
+            # 🔥 Better grayscale + contrast
+            img = img.convert("L").point(lambda x: x * 0.9)
 
-            # contrast boost (better readability)
-            img = ImageEnhance.Contrast(img).enhance(1.25)
-
-            # sharp edges (VERY important for text)
-            img = img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=140))
+            # 🔥 Sharpen text
+            img = img.filter(ImageFilter.SHARPEN)
 
             images.append(img)
-
+            
         if not images:
             doc.close()
             return file_bytes
@@ -1302,29 +1298,33 @@ def rasterize_and_compress_pdf(file_bytes):
             save_all=True,
             append_images=images[1:],
             quality=quality,
-            subsampling=0,   # 🔥 prevents blur
-            optimize=True
+            subsampling=0,     # IMPORTANT for text clarity
+            optimize=True,
+            progressive=True
         )
 
-        # ✅ SAME return style as your old code
-        if len(output_io.getvalue()) <= 1024 * 1024:
+        size_kb = len(output_io.getvalue()) / 1024
+        print(f"Trying → Size: {size_kb:.2f} KB | Q:{quality} | Z:{zoom} | DPI:{resolution}")
+
+        # ✅ Stop when under target
+        if size_kb <= target_kb:
+            doc.close()
+            return output_io.getvalue()
+            
+        # Prevent infinite loop if impossible to compress further
+        if quality <= 10 and zoom <= 1.0:
             doc.close()
             return output_io.getvalue()
 
-        # 🔻 Smart multi-loop compression (no blur priority)
+        # 🎯 Smart reduction (preserve clarity first)
         if quality > 65:
-            quality -= 5           # safest reduction
+            quality -= 5
         elif resolution > 160:
-            resolution -= 10       # slight DPI drop
-        elif zoom > 1.35:
-            zoom -= 0.1            # last option (avoid blur)
+            resolution -= 10
+        elif zoom > 1.4:
+            zoom -= 0.1
         else:
-            quality -= 5           # final push
-
-        # 🛑 safety exit
-        if quality <= 45:
-            doc.close()
-            return output_io.getvalue()
+            quality -= 5
 
 def require_token():
     h = request.headers.get("Authorization", "")
@@ -1441,7 +1441,7 @@ def api_aat_upload():
         filename = f.filename
         
         if len(file_bytes) > 1024 * 1024:
-            try: file_bytes = rasterize_and_compress_pdf(file_bytes)
+            try: file_bytes = compress_scanned_pdf(file_bytes, target_kb=1024)
             except Exception: pass
             if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large."}), 400
 
@@ -1599,7 +1599,7 @@ def api_lab_upload():
     f = request.files['prog_doc']
     file_bytes = f.read()
     if len(file_bytes) > 1024 * 1024:
-        try: file_bytes = rasterize_and_compress_pdf(file_bytes)
+        try: file_bytes = compress_scanned_pdf(file_bytes, target_kb=1024)
         except Exception: pass
         if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large. Please compress manually."}), 400
     rollno = request.form.get('rollno', '').upper()
