@@ -1257,73 +1257,102 @@ def scrape_qp_data(session, select_name, exam_code):
         return {"ok": False, "records": [], "error": str(e)}
 
 def compress_scanned_pdf(file_bytes, target_kb=1024):
-    # If the file is already less than or equal to 1 MB, no need to compress, just upload.
+    # If the file is already less than or equal to 1 MB, no need to compress.
     if len(file_bytes) <= target_kb * 1024:
         return file_bytes
 
-    if not fitz or not Image: raise Exception("PyMuPDF/Pillow missing.")
+    if not fitz or not Image: 
+        raise Exception("PyMuPDF/Pillow missing.")
+        
     doc = fitz.open(stream=file_bytes, filetype="pdf")
+    num_pages = len(doc)
+    if num_pages == 0:
+        return file_bytes
 
-    zoom = 1.8        # high clarity
-    quality = 85      # start high
-    resolution = 220  # DPI
+    # Initial high-quality settings
+    zoom = 1.8
+    quality = 80
+    resolution = 200
     
-    max_attempts = 15 # Safety limit to avoid infinite loops
+    max_attempts = 4 # Safety limit to avoid 60s proxy timeout
 
     for attempt in range(max_attempts):
-        images = []
         zoom_matrix = fitz.Matrix(zoom, zoom)
 
-        for page in doc:
-            pix = page.get_pixmap(
-                matrix=zoom_matrix,
-                alpha=False,
-                colorspace=fitz.csRGB
-            )
-
+        def process_page(page_num):
+            page = doc[page_num]
+            # Prevent excessive memory usage if page is already huge
+            rect = page.rect
+            page_max_dim = max(rect.width, rect.height)
+            actual_zoom = zoom
+            if page_max_dim * zoom > 3000:
+                actual_zoom = 3000 / page_max_dim
+                
+            matrix = fitz.Matrix(actual_zoom, actual_zoom)
+            pix = page.get_pixmap(matrix=matrix, alpha=False, colorspace=fitz.csRGB)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            # Explicitly free PyMuPDF pixmap memory immediately
+            pix = None
 
-            # 🔥 Better grayscale + contrast
-            # Converted back to RGB so JPEG compression actually works without infinite looping
+            # Fast contrast boost and grayscale, back to RGB for JPEG compatibility
             img = img.convert("L").point(lambda x: int(x * 0.9)).convert("RGB")
+            
+            # Only sharpen on high quality attempts to save processing time
+            if quality > 50:
+                img = img.filter(ImageFilter.SHARPEN)
+            return img
 
-            # 🔥 Sharpen text
-            img = img.filter(ImageFilter.SHARPEN)
-
-            images.append(img)
+        def get_images():
+            for i in range(1, num_pages):
+                yield process_page(i)
 
         output_io = io.BytesIO()
+        first_img = process_page(0)
 
-        images[0].save(
+        # Optimize subsampling based on quality to save massive space
+        subsampling_val = 0 if quality > 60 else 1
+
+        first_img.save(
             output_io,
             format="PDF",
             resolution=resolution,
             save_all=True,
-            append_images=images[1:],
+            append_images=get_images(),
             quality=quality,
-            subsampling=0,     # IMPORTANT for text clarity
-            optimize=True,
-            progressive=True
+            subsampling=subsampling_val,
+            optimize=True
         )
+        
+        # Free memory of first image immediately
+        first_img = None
 
         size_kb = len(output_io.getvalue()) / 1024
-        print(f"Trying → Size: {size_kb:.2f} KB | Q:{quality} | Z:{zoom} | DPI:{resolution}")
+        print(f"Attempt {attempt+1} → Size: {size_kb:.2f} KB | Q:{quality} | Z:{zoom}")
 
-        # ✅ Stop when under 1MB
+        # ✅ Stop when under target
         if size_kb <= target_kb:
             doc.close()
             return output_io.getvalue()
 
-        # 🎯 Smart reduction (preserve clarity first)
-        if quality > 65:
-            quality -= 5
-        elif resolution > 160:
-            resolution -= 10
-        elif zoom > 1.4:
-            zoom -= 0.1
+        # 🎯 Aggressively reduce parameters for next attempt to guarantee fast finish
+        ratio = size_kb / target_kb
+        if ratio > 3.0:
+            zoom = max(0.8, zoom * 0.6)
+            quality = max(30, quality - 30)
+            resolution = max(100, resolution - 50)
+        elif ratio > 2.0:
+            zoom = max(1.0, zoom * 0.75)
+            quality = max(40, quality - 20)
+            resolution = max(120, resolution - 40)
+        elif ratio > 1.5:
+            zoom = max(1.2, zoom * 0.85)
+            quality = max(50, quality - 15)
+            resolution = max(150, resolution - 20)
         else:
-            quality -= 5
-            if quality <= 5: break # Prevent negative quality crash
+            zoom = max(1.2, zoom - 0.2)
+            quality = max(40, quality - 10)
+            resolution = max(150, resolution - 20)
 
     doc.close()
     return output_io.getvalue()
