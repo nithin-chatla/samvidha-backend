@@ -1285,7 +1285,7 @@ def compress_scanned_pdf(file_bytes, target_kb=1024):
 
             # 🔥 Better grayscale + contrast
             # Converted back to RGB so JPEG compression actually works without infinite looping
-            img = img.convert("L").point(lambda x: x * 0.9).convert("RGB")
+            img = img.convert("L").point(lambda x: int(x * 0.9)).convert("RGB")
 
             # 🔥 Sharpen text
             img = img.filter(ImageFilter.SHARPEN)
@@ -1443,9 +1443,12 @@ def api_aat_upload():
         filename = f.filename
         
         if len(file_bytes) > 1024 * 1024:
-            try: file_bytes = compress_scanned_pdf(file_bytes)
-            except Exception: pass
-            if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large."}), 400
+            try: 
+                file_bytes = compress_scanned_pdf(file_bytes)
+            except Exception as e: 
+                return jsonify({"ok": False, "error": f"Compression Error: {str(e)}"}), 200
+            if len(file_bytes) > 1024 * 1024: 
+                return jsonify({"ok": False, "error": "PDF too large even after compression. Max 1MB."}), 200
 
     return jsonify(upload_aat_logic(SESSIONS[token], aat_type, subject_data, file_bytes, filename, youtube_link))
 
@@ -1601,9 +1604,12 @@ def api_lab_upload():
     f = request.files['prog_doc']
     file_bytes = f.read()
     if len(file_bytes) > 1024 * 1024:
-        try: file_bytes = compress_scanned_pdf(file_bytes)
-        except Exception: pass
-        if len(file_bytes) > 1024 * 1024: return jsonify({"ok": False, "error": "PDF too large. Please compress manually."}), 400
+        try: 
+            file_bytes = compress_scanned_pdf(file_bytes)
+        except Exception as e: 
+            return jsonify({"ok": False, "error": f"Compression Error: {str(e)}"}), 200
+        if len(file_bytes) > 1024 * 1024: 
+            return jsonify({"ok": False, "error": "PDF too large even after compression. Max 1MB."}), 200
     rollno = request.form.get('rollno', '').upper()
     week_no = request.form.get('week_no', '')
     upload_payload['prog_doc'] = (f"{rollno}_week{week_no}.pdf" if rollno and week_no else f.filename, io.BytesIO(file_bytes), 'application/pdf')
