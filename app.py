@@ -1261,48 +1261,80 @@ def rasterize_and_compress_pdf(file_bytes):
         raise Exception("PyMuPDF/Pillow missing.")
 
     import io
-    from PIL import ImageFilter
+    from PIL import ImageFilter, ImageEnhance
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
-    images = []
 
-    # 🔥 Better resolution (avoid blur)
-    zoom_matrix = fitz.Matrix(1.5, 1.5)
+    # Start high quality
+    zoom = 1.7
+    quality = 85
+    resolution = 220
 
-    for page in doc:
-        pix = page.get_pixmap(
-            matrix=zoom_matrix,
-            alpha=False,
-            colorspace=fitz.csRGB
+    while True:
+        images = []
+        zoom_matrix = fitz.Matrix(zoom, zoom)
+
+        for page in doc:
+            pix = page.get_pixmap(
+                matrix=zoom_matrix,
+                alpha=False,
+                colorspace=fitz.csRGB
+            )
+
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+            # 🔥 Convert to grayscale (keeps clarity, reduces size)
+            img = img.convert("L")
+
+            # 🔥 Denoise (removes scan noise → better compression)
+            img = img.filter(ImageFilter.MedianFilter(size=3))
+
+            # 🔥 Increase contrast (text becomes darker)
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(1.3)
+
+            # 🔥 Sharpen (restore edges)
+            img = img.filter(ImageFilter.UnsharpMask(radius=1.5, percent=150))
+
+            images.append(img)
+
+        if not images:
+            doc.close()
+            return file_bytes
+
+        output_io = io.BytesIO()
+
+        images[0].save(
+            output_io,
+            format="PDF",
+            resolution=resolution,
+            save_all=True,
+            append_images=images[1:],
+            quality=quality,
+            subsampling=0,   # 🔥 VERY IMPORTANT → prevents blur
+            optimize=True,
+            progressive=True
         )
 
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        # ✅ Stop when < 1MB
+        if len(output_io.getvalue()) <= 1024 * 1024:
+            doc.close()
+            return output_io.getvalue()
 
-        # 🔥 Improve scanned text quality
-        img = img.convert("L").point(lambda x: x * 0.9)   # better contrast
-        img = img.filter(ImageFilter.SHARPEN)             # sharpen text
+        # 🔻 Smart reduction (preserve clarity first)
+        if quality > 65:
+            quality -= 5
+        elif resolution > 170:
+            resolution -= 10
+        elif zoom > 1.4:
+            zoom -= 0.1
+        else:
+            quality -= 5
 
-        images.append(img)
-
-    if not images:
-        return file_bytes
-
-    output_io = io.BytesIO()
-
-    images[0].save(
-        output_io,
-        format="PDF",
-        resolution=200.0,      # higher DPI
-        save_all=True,
-        append_images=images[1:],
-        quality=75,            # balanced quality
-        subsampling=0,         # 🔥 prevents blur
-        optimize=True,
-        progressive=True
-    )
-
-    doc.close()
-    return output_io.getvalue()
+        # 🛑 Safety exit
+        if quality <= 45:
+            doc.close()
+            return output_io.getvalue()
 
 def require_token():
     h = request.headers.get("Authorization", "")
