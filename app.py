@@ -1330,9 +1330,9 @@ def compress_scanned_pdf(file_bytes, target_kb=1024):
 
 def require_token():
     h = request.headers.get("Authorization", "")
-    if not h.startswith("Bearer "): abort(401)
+    if not h.startswith("Bearer "): raise SessionExpiredError("Missing token")
     token = h.split(" ")[1]
-    if token not in TOKENS: abort(401)
+    if token not in TOKENS: raise SessionExpiredError("Invalid or expired token")
     return token
 
 @app.route("/check_update", methods=["GET"])
