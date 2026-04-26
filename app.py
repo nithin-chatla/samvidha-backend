@@ -204,6 +204,7 @@ def login_session(username, password):
     except Exception as e:
         return None, "network_error"
 
+
 def scrape_attendance(session):
     try:
         r = session.get(BASE + "/home?action=stud_att_STD", timeout=15)
