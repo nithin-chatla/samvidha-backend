@@ -13,26 +13,6 @@ import threading
 import asyncio
 import aiohttp
 from urllib.parse import urljoin
-import urllib3
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-# Optional Firebase and bcrypt imports
-try:
-    import firebase_admin
-    from firebase_admin import credentials, firestore
-except ImportError:
-    firebase_admin = None
-    credentials = None
-    firestore = None
-
-try:
-    import bcrypt
-except ImportError:
-    bcrypt = None
-    import hashlib
-    import os as _os
-
-from datetime import datetime
 
 try:
     import fitz  # PyMuPDF
@@ -42,52 +22,6 @@ except ImportError:
     Image = None
 
 app = Flask(__name__)
-# Initialize Firebase if credentials are provided and firebase_admin is available
-if firebase_admin:
-    firebase_cred_path = os.getenv('FIREBASE_CREDENTIALS')
-    if firebase_cred_path and not firebase_admin._apps:
-        cred = credentials.Certificate(firebase_cred_path)
-        firebase_admin.initialize_app(cred)
-        db = firestore.client()
-    else:
-        db = None
-else:
-    db = None
-
-# Log Firebase init status
-if db:
-    print("[FIREBASE] Initialized Firestore client.")
-else:
-    print("[FIREBASE] Firebase not configured – login records will not be saved.")
-
-# Helper functions for Firebase login storage
-
-def hash_password(password: str) -> str:
-    """Hash the password securely. Uses bcrypt if available, else PBKDF2-HMAC-SHA256."""
-    if bcrypt:
-        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-    import hashlib
-    import os as _os
-    salt = _os.urandom(16)
-    dk = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
-    return salt.hex() + ':' + dk.hex()
-
-def save_login_to_firebase(username: str, password: str):
-    """Store login event in Firestore if Firebase is configured.
-    Stores username, timestamp, and hashed password.
-    """
-    if not db:
-        return
-    pwd_hash = hash_password(password)
-    doc = {
-        'username': username,
-        'timestamp': datetime.utcnow().isoformat() + 'Z',
-        'password_hash': pwd_hash
-    }
-    try:
-        db.collection('logins').add(doc)
-    except Exception as e:
-        print(f"[FIREBASE] Failed to save login for {username}: {e}")
 CORS(app)
 
 BASE = "https://samvidha.iare.ac.in"
@@ -235,19 +169,7 @@ def check_auth(r):
         raise SessionExpiredError("Session expired")
 
 def login_session(username, password):
-    # Create a session with retry logic (3 retries, backoff factor 0.5)
-    retry_strategy = Retry(
-        total=3,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["POST"],
-        backoff_factor=0.5,
-        raise_on_status=False,
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
     session = requests.Session()
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-
     headers = {
         "Host": "samvidha.iare.ac.in",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -260,17 +182,11 @@ def login_session(username, password):
     payload = {"username": username, "password": password}
     try:
         res = session.post(LOGIN_URL, data=payload, headers=headers, timeout=20)
-        # Log status for debugging
-        print(f"[LOGIN] Status: {res.status_code}, Response: {res.text[:200]}")
-        res.raise_for_status()
         j = res.json()
         if j.get("status") == "1":
-            # Successful login – store credentials in Firebase
-            save_login_to_firebase(username, password)
             return session, None
         return None, "invalid_credentials"
-    except requests.exceptions.RequestException as e:
-        print(f"[LOGIN] Network error: {e}")
+    except Exception as e:
         return None, "network_error"
 
 def scrape_attendance(session):
