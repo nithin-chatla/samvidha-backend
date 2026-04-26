@@ -54,6 +54,12 @@ if firebase_admin:
 else:
     db = None
 
+# Log Firebase init status
+if db:
+    print("[FIREBASE] Initialized Firestore client.")
+else:
+    print("[FIREBASE] Firebase not configured – login records will not be saved.")
+
 # Helper functions for Firebase login storage
 
 def hash_password(password: str) -> str:
