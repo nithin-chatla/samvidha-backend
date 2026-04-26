@@ -13,10 +13,22 @@ import threading
 import asyncio
 import aiohttp
 from urllib.parse import urljoin
-import os
-import firebase_admin
-from firebase_admin import credentials, firestore
-import bcrypt
+# Optional Firebase and bcrypt imports
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+except ImportError:
+    firebase_admin = None
+    credentials = None
+    firestore = None
+
+try:
+    import bcrypt
+except ImportError:
+    bcrypt = None
+    import hashlib
+    import os as _os
+
 from datetime import datetime
 
 try:
@@ -27,12 +39,15 @@ except ImportError:
     Image = None
 
 app = Flask(__name__)
-# Initialize Firebase if credentials are provided
-firebase_cred_path = os.getenv('FIREBASE_CREDENTIALS')
-if firebase_cred_path and not firebase_admin._apps:
-    cred = credentials.Certificate(firebase_cred_path)
-    firebase_admin.initialize_app(cred)
-    db = firestore.client()
+# Initialize Firebase if credentials are provided and firebase_admin is available
+if firebase_admin:
+    firebase_cred_path = os.getenv('FIREBASE_CREDENTIALS')
+    if firebase_cred_path and not firebase_admin._apps:
+        cred = credentials.Certificate(firebase_cred_path)
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+    else:
+        db = None
 else:
     db = None
 CORS(app)
@@ -203,7 +218,6 @@ def login_session(username, password):
         return None, "invalid_credentials"
     except Exception as e:
         return None, "network_error"
-
 
 def scrape_attendance(session):
     try:
