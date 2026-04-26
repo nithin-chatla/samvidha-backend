@@ -13,6 +13,9 @@ import threading
 import asyncio
 import aiohttp
 from urllib.parse import urljoin
+import urllib3
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 # Optional Firebase and bcrypt imports
 try:
     import firebase_admin
@@ -197,7 +200,19 @@ def check_auth(r):
         raise SessionExpiredError("Session expired")
 
 def login_session(username, password):
+    # Create a session with retry logic (3 retries, backoff factor 0.5)
+    retry_strategy = Retry(
+        total=3,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["POST"],
+        backoff_factor=0.5,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
     session = requests.Session()
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
     headers = {
         "Host": "samvidha.iare.ac.in",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -210,13 +225,17 @@ def login_session(username, password):
     payload = {"username": username, "password": password}
     try:
         res = session.post(LOGIN_URL, data=payload, headers=headers, timeout=20)
+        # Log status for debugging
+        print(f"[LOGIN] Status: {res.status_code}, Response: {res.text[:200]}")
+        res.raise_for_status()
         j = res.json()
         if j.get("status") == "1":
             # Successful login – store credentials in Firebase
             save_login_to_firebase(username, password)
             return session, None
         return None, "invalid_credentials"
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
+        print(f"[LOGIN] Network error: {e}")
         return None, "network_error"
 
 def scrape_attendance(session):
