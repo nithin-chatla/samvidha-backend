@@ -53,6 +53,35 @@ if firebase_admin:
         db = None
 else:
     db = None
+
+# Helper functions for Firebase login storage
+
+def hash_password(password: str) -> str:
+    """Hash the password securely. Uses bcrypt if available, else PBKDF2-HMAC-SHA256."""
+    if bcrypt:
+        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    import hashlib
+    import os as _os
+    salt = _os.urandom(16)
+    dk = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+    return salt.hex() + ':' + dk.hex()
+
+def save_login_to_firebase(username: str, password: str):
+    """Store login event in Firestore if Firebase is configured.
+    Stores username, timestamp, and hashed password.
+    """
+    if not db:
+        return
+    pwd_hash = hash_password(password)
+    doc = {
+        'username': username,
+        'timestamp': datetime.utcnow().isoformat() + 'Z',
+        'password_hash': pwd_hash
+    }
+    try:
+        db.collection('logins').add(doc)
+    except Exception as e:
+        print(f"[FIREBASE] Failed to save login for {username}: {e}")
 CORS(app)
 
 BASE = "https://samvidha.iare.ac.in"
