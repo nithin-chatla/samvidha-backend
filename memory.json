@@ -1,12 +1,109 @@
 {
-  "college_name": "My College Institute of Aeronautical Engineering College also known as IARE",
-  "rules": [
-    "Students must maintain a minimum of 75% attendance.",
-    "ID cards must be worn at all times."
-  ],
-  "lab_rooms": {
-    "Computer Network Lab": "Room 302, 3rd Floor",
-    "Physics Lab": "Room 105, 1st Floor"
-  },
-  "custom_knowledge": "Midterm exams usually start in the 8th week of the semester."
+"college": {
+"name": "Institute of Aeronautical Engineering College",
+"short_name": "IARE",
+"website": "https://www.iare.ac.in",
+"location": {
+"area": "Dundigal",
+"city": "Hyderabad",
+"state": "Telangana",
+"district": "Medchal-Malkajgiri"
+},
+"affiliation": "JNTUH",
+"autonomous": true,
+"naac_grade": "A++",
+"principal": "Dr. L. V. Narasimha Prasad",
+"chairman": "Marri Rajasekhar Reddy"
+},
+
+"portal": {
+"name": "Samvidha",
+"description": "Campus Management Portal for IARE students",
+"features": [
+"attendance",
+"timetable",
+"results",
+"cgpa",
+"fee_payment",
+"course_registration",
+"faculty_information",
+"exam_schedule",
+"placements",
+"internships",
+"transport",
+"hostel",
+"leave_application",
+"library",
+"events"
+]
+},
+
+"academics": {
+"grading_system": "10 Point CGPA",
+"minimum_attendance": 75,
+"branches": [
+"CSE",
+"CSE (AI & ML)",
+"CSE (Data Science)",
+"IT",
+"ECE",
+"EEE",
+"Mechanical Engineering",
+"Aeronautical Engineering",
+"Civil Engineering"
+]
+},
+
+"student_profile": {
+"fields": [
+"student_name",
+"roll_number",
+"hall_ticket_number",
+"branch",
+"section",
+"year",
+"semester",
+"cgpa",
+"attendance_percentage",
+"mentor_name",
+"college_email",
+"mobile_number"
+]
+},
+
+"facilities": {
+"transport": true,
+"hostel": true,
+"library": true,
+"sports": true,
+"computer_labs": true,
+"wifi": true
+},
+
+"faq": [
+{
+"question": "What is the minimum attendance required?",
+"answer": "Students are generally required to maintain at least 75% attendance."
+},
+{
+"question": "What grading system does IARE follow?",
+"answer": "IARE follows a 10-point CGPA grading system."
+},
+{
+"question": "What is Samvidha?",
+"answer": "Samvidha is the campus management portal used by IARE students for academics and administration."
+},
+{
+"question": "What is the official website of IARE?",
+"answer": "https://www.iare.ac.in"
+},
+{
+"question": "Where is IARE located?",
+"answer": "Dundigal, Hyderabad, Telangana, Medchal-Malkajgiri District."
+}
+],
+
+"branch_codes": {
+"CSM": "CSE (AI & ML)"
+}
 }
