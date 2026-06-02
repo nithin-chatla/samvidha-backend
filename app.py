@@ -1587,9 +1587,14 @@ def api_aat_solve():
     import requests
 
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
         payload = {"contents": [{"role": "user", "parts": [{"text": system_prompt + "\n\n" + user_prompt}]}]}
         res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}).json()
+        
+        if 'error' in res and 'not found' in res['error'].get('message', '').lower():
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
+            res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}).json()
+            
         if 'candidates' in res and len(res['candidates']) > 0:
             ai_response = res['candidates'][0]['content']['parts'][0]['text']
         else: ai_response = str(res)
@@ -1716,9 +1721,14 @@ Rules:
 
     import requests
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
         payload = {"contents": [{"role": "user", "parts": [{"text": system_prompt + "\n\nUser Message:\n" + user_msg}]}]}
         res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
+        
+        # If the model is not found, fallback to gemini-pro which is universally available
+        if 'error' in res and 'not found' in res['error'].get('message', '').lower():
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
+            res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
         
         if 'error' in res:
             return jsonify({"success": True, "reply": f"Gemini API Error: {res['error'].get('message', 'Unknown API Error')}"})
