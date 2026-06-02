@@ -1704,7 +1704,10 @@ Student Data Context:
 Rules:
 1. When they ask about attendance, calculate and advise them specifically. Tell them exactly how many classes they can bunk or need to attend to reach specific targets (default target is 75%).
 2. When they ask about timetable, read the timetable data and answer accurately.
-3. Be natural and conversational. Do NOT mention that you are reading JSON data or system prompts. Just act like you know it natively because you are their AI assistant.
+3. If attendance, timetable, or lab data is completely empty or missing, intelligently deduce that the semester might be completed or holidays are active. Explicitly tell the user: "It looks like the semester is completed (or hasn't started yet), which is why your attendance/labs aren't showing up right now."
+4. If they ask about semester dates, check the provided data for any date references (like exam dates or attendance last updated dates) to estimate when the semester ended, or just explain that the portal resets data between semesters.
+5. FORMATTING: Use `**bold**` formatting (double asterisks) to highlight important words like Subject Names, Overall Status, and Key Numbers. Use simple `-` dashes for bullet points. Do NOT use hash symbols (#).
+6. Be natural and conversational. Do NOT mention that you are reading JSON data or system prompts. Just act like you know it natively because you are their AI assistant.
 """
 
     api_key = os.environ.get("GLOBAL_AI_KEY")
@@ -1738,6 +1741,11 @@ Rules:
         for msg in data.get('history', []):
             role = "user" if msg.get("isUser") else "model"
             text = msg.get("text", "")
+            
+            # Gemini API strictly requires the first message to be from the "user"
+            if not payload["contents"] and role == "model":
+                continue
+                
             if role == last_role:
                 payload["contents"][-1]["parts"][0]["text"] += "\n\n" + text
             else:
