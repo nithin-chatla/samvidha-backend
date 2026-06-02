@@ -1849,6 +1849,8 @@ def api_chatbot():
             # Sort by highest score first
             faculty_scores.sort(key=lambda x: x[0], reverse=True)
             relevant = [f[1] for f in faculty_scores[:3]] # Take top 3
+            
+            if relevant:
                 faculty_prompt_injection = f"\n--- RELEVANT FACULTY DATA ---\nBased on the user's message, here is the data for the faculty they might be asking about:\n```json\n{json.dumps(relevant, indent=2)}\n```\nCRITICAL INSTRUCTION: When answering questions about a faculty member, you MUST ALWAYS include their full Designation, Department, Email, and provide their profile_url as a link.\nIf the user misspelled the name, politely clarify that you found information for the closest matching faculty member.\n-----------------------------\n"
     except Exception as e:
         print("Error reading faculty_data.json:", e)
