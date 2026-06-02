@@ -1774,8 +1774,10 @@ def api_chatbot():
             with open(faculty_path, 'r', encoding='utf-8') as f:
                 faculty_list = json.load(f)
                 
-            user_words = [w.lower() for w in user_msg.replace("?"," ").replace("."," ").replace(","," ").split() if len(w) > 2]
-            relevant = []
+            stop_words = {"who", "is", "the", "what", "tell", "me", "about", "details", "of", "sir", "madam", "mam", "professor", "prof", "dr", "mr", "ms", "mrs", "can", "you", "give", "info", "information", "faculty", "teacher", "do", "hi", "hey", "hello", "in", "at", "on", "a", "an", "for", "and", "or", "name"}
+            user_words = [w.lower() for w in user_msg.replace("?"," ").replace("."," ").replace(","," ").split() if w.lower() not in stop_words]
+            
+            faculty_scores = []
             
             if isinstance(faculty_list, dict):
                 faculty_items = [{"name": k, **v} for k, v in faculty_list.items()]
@@ -1785,27 +1787,27 @@ def api_chatbot():
             for details in faculty_items:
                 name = details.get("name", "")
                 name_lower = name.lower()
-                
-                # Exact partial match
-                if name_lower.replace(".","") in user_msg.lower().replace(".",""):
-                    relevant.append(details)
-                    continue
-                
-                # Fuzzy match
                 search_terms = details.get("search_index", name_lower.split())
-                match_found = False
+                
+                # Filter out common titles from search terms so they don't artificially boost scores
+                search_terms = [t for t in search_terms if t not in ["dr", "mr", "ms", "professor", "assistant", "associate", "head", "deputy", "engineering", "technology"]]
+                
+                score = 0
                 for u_word in user_words:
-                    for s_term in search_terms:
-                        if s_term in ["dr", "mr", "ms", "professor", "assistant", "associate", "head", "deputy", "engineering", "technology"]:
-                            continue
-                        if len(s_term) > 3 and difflib.SequenceMatcher(None, u_word, s_term).ratio() > 0.75:
-                            relevant.append(details)
-                            match_found = True
-                            break
-                    if match_found: break
+                    if u_word in search_terms:
+                        score += 1.0
+                    elif len(u_word) > 3:
+                        # Fuzzy match for typos, only for words longer than 3 chars
+                        best_ratio = max([difflib.SequenceMatcher(None, u_word, s_term).ratio() for s_term in search_terms] + [0])
+                        if best_ratio > 0.8:
+                            score += best_ratio
+                
+                if score > 0.5: # At least some substantial match
+                    faculty_scores.append((score, details))
             
-            if relevant:
-                relevant = relevant[:3] # Max 3 to save tokens
+            # Sort by highest score first
+            faculty_scores.sort(key=lambda x: x[0], reverse=True)
+            relevant = [f[1] for f in faculty_scores[:3]] # Take top 3
                 faculty_prompt_injection = f"\n--- RELEVANT FACULTY DATA ---\nBased on the user's message, here is the data for the faculty they might be asking about:\n```json\n{json.dumps(relevant, indent=2)}\n```\nCRITICAL INSTRUCTION: When answering questions about a faculty member, you MUST ALWAYS include their full Designation, Department, Email, and provide their profile_url as a link.\nIf the user misspelled the name, politely clarify that you found information for the closest matching faculty member.\n-----------------------------\n"
     except Exception as e:
         print("Error reading faculty_data.json:", e)
