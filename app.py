@@ -1772,29 +1772,40 @@ def api_chatbot():
         faculty_path = os.path.join(os.path.dirname(__file__), "faculty_data.json")
         if os.path.exists(faculty_path):
             with open(faculty_path, 'r', encoding='utf-8') as f:
-                faculty_dict = json.load(f)
+                faculty_list = json.load(f)
                 
             user_words = [w.lower() for w in user_msg.replace("?"," ").replace("."," ").replace(","," ").split() if len(w) > 2]
-            relevant = {}
-            for name, details in faculty_dict.items():
+            relevant = []
+            
+            if isinstance(faculty_list, dict):
+                faculty_items = [{"name": k, **v} for k, v in faculty_list.items()]
+            else:
+                faculty_items = faculty_list
+
+            for details in faculty_items:
+                name = details.get("name", "")
                 name_lower = name.lower()
+                
                 # Exact partial match
-                if name_lower in user_msg.lower():
-                    relevant[name] = details
+                if name_lower.replace(".","") in user_msg.lower().replace(".",""):
+                    relevant.append(details)
                     continue
                 
                 # Fuzzy match
-                name_parts = name_lower.split()
+                search_terms = details.get("search_index", name_lower.split())
                 match_found = False
                 for u_word in user_words:
-                    for n_part in name_parts:
-                        if len(n_part) > 2 and difflib.SequenceMatcher(None, u_word, n_part).ratio() > 0.8:
-                            relevant[name] = details
+                    for s_term in search_terms:
+                        if s_term in ["dr", "mr", "ms", "professor", "assistant", "associate", "head", "deputy", "engineering", "technology"]:
+                            continue
+                        if len(s_term) > 3 and difflib.SequenceMatcher(None, u_word, s_term).ratio() > 0.75:
+                            relevant.append(details)
                             match_found = True
                             break
                     if match_found: break
             
             if relevant:
+                relevant = relevant[:3] # Max 3 to save tokens
                 faculty_prompt_injection = f"\n--- RELEVANT FACULTY DATA ---\nBased on the user's message, here is the data for the faculty they might be asking about:\n```json\n{json.dumps(relevant, indent=2)}\n```\nIf the user misspelled the name, politely clarify that you found information for the closest matching faculty member.\n-----------------------------\n"
     except Exception as e:
         print("Error reading faculty_data.json:", e)
