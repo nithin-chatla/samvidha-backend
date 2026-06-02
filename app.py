@@ -1806,7 +1806,7 @@ def api_chatbot():
             
             if relevant:
                 relevant = relevant[:3] # Max 3 to save tokens
-                faculty_prompt_injection = f"\n--- RELEVANT FACULTY DATA ---\nBased on the user's message, here is the data for the faculty they might be asking about:\n```json\n{json.dumps(relevant, indent=2)}\n```\nIf the user misspelled the name, politely clarify that you found information for the closest matching faculty member.\n-----------------------------\n"
+                faculty_prompt_injection = f"\n--- RELEVANT FACULTY DATA ---\nBased on the user's message, here is the data for the faculty they might be asking about:\n```json\n{json.dumps(relevant, indent=2)}\n```\nCRITICAL INSTRUCTION: When answering questions about a faculty member, you MUST ALWAYS include their full Designation, Department, Email, and provide their profile_url as a link.\nIf the user misspelled the name, politely clarify that you found information for the closest matching faculty member.\n-----------------------------\n"
     except Exception as e:
         print("Error reading faculty_data.json:", e)
         
