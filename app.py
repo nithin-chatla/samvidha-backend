@@ -1569,7 +1569,7 @@ def api_lab_delete():
         return jsonify({"ok": False, "error": "Delete failed"})
     except Exception as e: return jsonify({"ok": False, "error": str(e)})
 
-def call_ai_with_fallback(system_prompt, history_messages):
+def call_ai_with_fallback(system_prompt, history_messages, user_msg="", user_data=None):
     import os, time, requests
     api_keys = [k.strip() for k in os.environ.get("GLOBAL_AI_KEY", "").split(",") if k.strip()]
     groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
@@ -1661,7 +1661,48 @@ def call_ai_with_fallback(system_prompt, history_messages):
         except Exception as e:
             return {"success": False, "error": f"Groq Exception: {str(e)}"}
 
-    return {"success": False, "error": f"All API keys exhausted. Last error: {last_error}"}
+    # Offline Fallback Commands when all APIs fail
+    if user_data:
+        msg_lower = user_msg.lower()
+        
+        # Attendance Logic
+        if "attendance" in msg_lower or "bunk" in msg_lower or "absent" in msg_lower:
+            att_data = user_data.get("attendance", {}).get("records", [])
+            if att_data:
+                reply = "*(Offline Mode)*\nHere is your current **Attendance Breakdown**:\n\n"
+                total_c = 0
+                total_a = 0
+                for r in att_data:
+                    c = int(r.get("Conducted", 0))
+                    a = int(r.get("Attended", 0))
+                    total_c += c
+                    total_a += a
+                    reply += f"- **{r.get('Subject', 'Subject')}**: {r.get('Attendance %', '0')}%\n"
+                
+                if total_c > 0:
+                    overall = (total_a / total_c) * 100
+                    reply = f"*(Offline Mode)*\nYour overall attendance is **{overall:.2f}%**.\n\n" + reply.replace("*(Offline Mode)*\n", "")
+                return {"success": True, "reply": reply}
+
+        # Timetable Logic
+        if "timetable" in msg_lower or "class" in msg_lower or "period" in msg_lower:
+            tt_data = user_data.get("timetable", [])
+            if tt_data:
+                reply = "*(Offline Mode)*\nHere is your **Timetable for Today**:\n\n"
+                for r in tt_data:
+                    reply += f"- **{r.get('time', '')}**: {r.get('subject', '')} (Room: {r.get('room', '')})\n"
+                return {"success": True, "reply": reply}
+                
+        # Results Logic
+        if "result" in msg_lower or "cgpa" in msg_lower or "sgpa" in msg_lower or "mark" in msg_lower:
+            results = user_data.get("results", {})
+            cgpa = results.get("cgpa", "N/A")
+            reply = f"*(Offline Mode)*\nYour current overall **CGPA is {cgpa}**.\n\nCheck the Results section on the home screen for detailed subject marks!"
+            return {"success": True, "reply": reply}
+
+    # Engaging generic fallback message
+    fallback_msg = "Samvidha AI is currently receiving an overwhelming amount of traffic and is taking a quick break! ⏳\n\nIn the meantime, you can explore the app to check your **Attendance**, view your **Timetable**, or browse your **Lab Records** directly from the home screen."
+    return {"success": True, "reply": fallback_msg}
 
 @app.route("/aat_solve", methods=["POST"])
 def api_aat_solve():
@@ -1857,7 +1898,7 @@ Rules:
     
     history_messages.append({"role": "user", "text": user_msg})
 
-    result = call_ai_with_fallback(system_prompt, history_messages)
+    result = call_ai_with_fallback(system_prompt, history_messages, user_msg=user_msg, user_data=user_data)
     
     # We return the exact dictionary format expected by the frontend
     return jsonify(result)
