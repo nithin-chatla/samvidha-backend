@@ -1,0 +1,12 @@
+{
+  "college_name": "My College Institute of Aeronautical Engineering College also known as IARE",
+  "rules": [
+    "Students must maintain a minimum of 75% attendance.",
+    "ID cards must be worn at all times."
+  ],
+  "lab_rooms": {
+    "Computer Network Lab": "Room 302, 3rd Floor",
+    "Physics Lab": "Room 105, 1st Floor"
+  },
+  "custom_knowledge": "Midterm exams usually start in the 8th week of the semester."
+}
