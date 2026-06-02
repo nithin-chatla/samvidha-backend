@@ -1712,7 +1712,7 @@ Rules:
 
     api_key = os.environ.get("GLOBAL_AI_KEY")
     if not api_key:
-        return jsonify({"success": False, "error": "Backend AI Key is not configured on Render. Please add GLOBAL_AI_KEY to your Environment Variables."})
+        return jsonify({"success": True, "reply": "Error: Backend AI Key (GLOBAL_AI_KEY) is not configured on your server."})
 
     import requests
     try:
@@ -1720,14 +1720,17 @@ Rules:
         payload = {"contents": [{"role": "user", "parts": [{"text": system_prompt + "\n\nUser Message:\n" + user_msg}]}]}
         res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
         
+        if 'error' in res:
+            return jsonify({"success": True, "reply": f"Gemini API Error: {res['error'].get('message', 'Unknown API Error')}"})
+            
         if 'candidates' in res and len(res['candidates']) > 0:
             reply = res['candidates'][0]['content']['parts'][0]['text']
             return jsonify({"success": True, "reply": reply})
         else:
-            return jsonify({"success": False, "error": "AI returned an unexpected response."})
+            return jsonify({"success": True, "reply": f"AI returned an unexpected response: {str(res)}"})
             
     except Exception as e:
-        return jsonify({"success": False, "error": f"Cloud AI failed: {str(e)}"}), 500
+        return jsonify({"success": True, "reply": f"Cloud AI failed: {str(e)}"})
 
 @app.route("/", methods=["GET"])
 def home(): return jsonify({"status": "API is running"})
