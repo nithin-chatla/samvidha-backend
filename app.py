@@ -1757,10 +1757,19 @@ Rules:
         else:
             payload["contents"].append({"role": "user", "parts": [{"text": user_msg}]})
 
-        res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
-        
-        if 'error' in res:
-            return jsonify({"success": True, "reply": f"Gemini API Error: {res['error'].get('message', 'Unknown API Error')}"})
+        import time
+        max_retries = 3
+        res = {}
+        for attempt in range(max_retries):
+            res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
+            if 'error' in res:
+                err_msg = str(res['error'].get('message', '')).lower()
+                if 'high demand' in err_msg or '503' in err_msg or '429' in err_msg or 'overloaded' in err_msg:
+                    if attempt < max_retries - 1:
+                        time.sleep(2)  # Wait 2 seconds and retry
+                        continue
+                return jsonify({"success": True, "reply": f"Gemini API is experiencing High Demand right now. Please try again in a few seconds."})
+            break
             
         if 'candidates' in res and len(res['candidates']) > 0:
             reply = res['candidates'][0]['content']['parts'][0]['text']
