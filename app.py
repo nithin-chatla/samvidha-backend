@@ -1662,6 +1662,73 @@ def api_aat_wrap_document():
         return jsonify({"ok": False, "error": str(e)})
 
 
+@app.route("/chatbot", methods=["POST"])
+def api_chatbot():
+    try:
+        token = require_token()
+    except:
+        pass # Allow without token if necessary
+        
+    data = request.get_json() or {}
+    user_msg = data.get('message', '')
+    user_data = data.get('user_data', {})
+    
+    profile = user_data.get('profile', {}).get('Header', {})
+    name = profile.get('Full Name', 'Student')
+    roll_number = profile.get('Roll No', 'Unknown')
+    
+    att_data = user_data.get('attendance')
+    attendance_str = "Not available right now"
+    if isinstance(att_data, list):
+        sum_percent = 0
+        valid_count = 0
+        for record in att_data:
+            cond_str = str(record.get('Conducted', '0'))
+            cond = float(''.join(filter(str.isdigit, cond_str)) or 0)
+            if cond > 0:
+                att_pct = str(record.get('Attendance %', '0'))
+                sum_percent += float(''.join(filter(lambda c: c.isdigit() or c=='.', att_pct)) or 0)
+                valid_count += 1
+        if valid_count > 0:
+            attendance_str = f"{(sum_percent / valid_count):.2f}%"
+
+    cgpa = user_data.get('results', {}).get('overall_cgpa', 'Not available right now')
+    
+    system_prompt = f"""You are Samvidha AI, the official intelligent assistant for the Samvidha Hub app. 
+You are helpful, polite, concise, and friendly.
+
+Here are the user's current live details:
+- Name: {name}
+- Roll Number: {roll_number}
+- Overall Attendance: {attendance_str}
+- Overall CGPA: {cgpa}
+
+Rules:
+1. If they ask about their attendance, tell them the exact percentage listed above.
+2. If they ask about their marks or CGPA, tell them the exact CGPA listed above.
+3. If you don't know the answer, tell them to explore the Samvidha App dashboard.
+4. Keep answers short and natural.
+"""
+
+    api_key = os.environ.get("GLOBAL_AI_KEY")
+    if not api_key:
+        return jsonify({"success": False, "error": "Backend AI Key is not configured on Render. Please add GLOBAL_AI_KEY to your Environment Variables."})
+
+    import requests
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        payload = {"contents": [{"role": "user", "parts": [{"text": system_prompt + "\n\nUser Message:\n" + user_msg}]}]}
+        res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
+        
+        if 'candidates' in res and len(res['candidates']) > 0:
+            reply = res['candidates'][0]['content']['parts'][0]['text']
+            return jsonify({"success": True, "reply": reply})
+        else:
+            return jsonify({"success": False, "error": "AI returned an unexpected response."})
+            
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Cloud AI failed: {str(e)}"}), 500
+
 @app.route("/", methods=["GET"])
 def home(): return jsonify({"status": "API is running"})
 
