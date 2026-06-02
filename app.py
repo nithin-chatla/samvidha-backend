@@ -1569,29 +1569,19 @@ def api_lab_delete():
         return jsonify({"ok": False, "error": "Delete failed"})
     except Exception as e: return jsonify({"ok": False, "error": str(e)})
 
-@app.route("/aat_solve", methods=["POST"])
-def api_aat_solve():
-    token = require_token()
-    data = request.get_json() or {}
-    api_key = os.environ.get("GLOBAL_AI_KEY")
-    questions = data.get('questions')
-    subject = data.get('subject', 'Assignment')
-    aat_type = data.get('aat_type', 'AAT')
+def call_ai_with_fallback(system_prompt, history_messages):
+    import os, time, requests
+    api_keys = [k.strip() for k in os.environ.get("GLOBAL_AI_KEY", "").split(",") if k.strip()]
+    groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
 
-    if not api_key: return jsonify({"ok": False, "error": "Backend API Key Not Configured"}), 400
-
-    system_prompt = "You are an expert academic AI. Answer the following college assignment questions formally and comprehensively."
-    user_prompt = f"Subject: {subject}\nAssessment Type: {aat_type}\n\nQuestions:\n{questions}"
-    ai_response = "Error connecting to AI."
-
-    import requests
+    if not api_keys and not groq_api_key:
+        return {"success": False, "error": "No API keys configured on server."}
 
     def get_gemini_url(key):
         try:
             models_res = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=10).json()
             if 'models' in models_res:
                 for m in models_res['models']:
-                    # Look for models supporting generateContent and preferably gemini-1.5
                     if 'generateContent' in m.get('supportedGenerationMethods', []) and 'gemini-1.5-flash' in m['name']:
                         return f"https://generativelanguage.googleapis.com/v1beta/{m['name']}:generateContent?key={key}"
                 for m in models_res['models']:
@@ -1600,18 +1590,95 @@ def api_aat_solve():
         except: pass
         return f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
 
-    try:
-        url = get_gemini_url(api_key)
-        payload = {"contents": [{"role": "user", "parts": [{"text": system_prompt + "\n\n" + user_prompt}]}]}
-        res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
-            
-        if 'candidates' in res and len(res['candidates']) > 0:
-            ai_response = res['candidates'][0]['content']['parts'][0]['text']
-        else: ai_response = str(res)
+    last_error = ""
 
-        return jsonify({"ok": True, "answer": ai_response})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+    # 1. Try Gemini Keys First (Rotation)
+    for key in api_keys:
+        try:
+            url = get_gemini_url(key)
+            payload = {
+                "system_instruction": {"parts": [{"text": system_prompt}]},
+                "contents": []
+            }
+            last_role = None
+            for msg in history_messages:
+                role = msg["role"]
+                text = msg["text"]
+                if not payload["contents"] and role == "model":
+                    continue
+                if role == last_role:
+                    payload["contents"][-1]["parts"][0]["text"] += "\n\n" + text
+                else:
+                    payload["contents"].append({"role": role, "parts": [{"text": text}]})
+                    last_role = role
+            
+            res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
+            
+            if 'error' in res:
+                err_msg = str(res['error'].get('message', '')).lower()
+                last_error = err_msg
+                # If rate limited, wait a second and try the NEXT key in the loop
+                if 'high demand' in err_msg or '503' in err_msg or '429' in err_msg or 'overloaded' in err_msg or 'quota' in err_msg:
+                    time.sleep(1)
+                    continue
+                return {"success": False, "error": f"Gemini Error: {err_msg}"}
+
+            if 'candidates' in res and len(res['candidates']) > 0:
+                reply = res['candidates'][0]['content']['parts'][0]['text']
+                return {"success": True, "reply": reply}
+                
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    # 2. Try Groq Fallback if all Gemini keys failed
+    if groq_api_key:
+        try:
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            messages = [{"role": "system", "content": system_prompt}]
+            for msg in history_messages:
+                # Groq role is "assistant", not "model"
+                role = "assistant" if msg["role"] == "model" else "user"
+                messages.append({"role": role, "content": msg["text"]})
+                
+            payload = {
+                "model": "llama3-8b-8192",
+                "messages": messages,
+                "temperature": 0.7
+            }
+            headers = {
+                "Authorization": f"Bearer {groq_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            res = requests.post(url, json=payload, headers=headers, timeout=15).json()
+            if 'error' in res:
+                return {"success": False, "error": f"Groq Error: {res['error'].get('message', str(res['error']))}"}
+                
+            if 'choices' in res and len(res['choices']) > 0:
+                reply = res['choices'][0]['message']['content']
+                return {"success": True, "reply": reply}
+        except Exception as e:
+            return {"success": False, "error": f"Groq Exception: {str(e)}"}
+
+    return {"success": False, "error": f"All API keys exhausted. Last error: {last_error}"}
+
+@app.route("/aat_solve", methods=["POST"])
+def api_aat_solve():
+    token = require_token()
+    data = request.get_json() or {}
+    questions = data.get('questions')
+    subject = data.get('subject', 'Assignment')
+    aat_type = data.get('aat_type', 'AAT')
+
+    system_prompt = "You are an expert academic AI. Answer the following college assignment questions formally and comprehensively."
+    user_prompt = f"Subject: {subject}\nAssessment Type: {aat_type}\n\nQuestions:\n{questions}"
+
+    result = call_ai_with_fallback(system_prompt, [{"role": "user", "text": user_prompt}])
+    if result["success"]:
+        return jsonify({"ok": True, "answer": result["reply"]})
+    else:
+        return jsonify({"ok": False, "error": result["error"]})
 
 @app.route("/aat_wrap_document", methods=["POST"])
 def api_aat_wrap_document():
@@ -1710,75 +1777,18 @@ Rules:
 6. Be natural and conversational. Do NOT mention that you are reading JSON data or system prompts. Just act like you know it natively because you are their AI assistant.
 """
 
-    api_key = os.environ.get("GLOBAL_AI_KEY")
-    if not api_key:
-        return jsonify({"success": True, "reply": "Error: Backend AI Key (GLOBAL_AI_KEY) is not configured on your server."})
+    history_messages = []
+    for msg in data.get('history', []):
+        role = "user" if msg.get("isUser") else "model"
+        text = msg.get("text", "")
+        history_messages.append({"role": role, "text": text})
+    
+    history_messages.append({"role": "user", "text": user_msg})
 
-    import requests
-
-    def get_gemini_url(key):
-        try:
-            models_res = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=10).json()
-            if 'models' in models_res:
-                for m in models_res['models']:
-                    if 'generateContent' in m.get('supportedGenerationMethods', []) and 'gemini-1.5-flash' in m['name']:
-                        return f"https://generativelanguage.googleapis.com/v1beta/{m['name']}:generateContent?key={key}"
-                for m in models_res['models']:
-                    if 'generateContent' in m.get('supportedGenerationMethods', []) and 'gemini' in m['name']:
-                        return f"https://generativelanguage.googleapis.com/v1beta/{m['name']}:generateContent?key={key}"
-        except: pass
-        return f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-
-    try:
-        url = get_gemini_url(api_key)
-        
-        payload = {
-            "system_instruction": {"parts": [{"text": system_prompt}]},
-            "contents": []
-        }
-        
-        last_role = None
-        for msg in data.get('history', []):
-            role = "user" if msg.get("isUser") else "model"
-            text = msg.get("text", "")
-            
-            # Gemini API strictly requires the first message to be from the "user"
-            if not payload["contents"] and role == "model":
-                continue
-                
-            if role == last_role:
-                payload["contents"][-1]["parts"][0]["text"] += "\n\n" + text
-            else:
-                payload["contents"].append({"role": role, "parts": [{"text": text}]})
-                last_role = role
-                
-        if last_role == "user":
-            payload["contents"][-1]["parts"][0]["text"] += "\n\n" + user_msg
-        else:
-            payload["contents"].append({"role": "user", "parts": [{"text": user_msg}]})
-
-        import time
-        max_retries = 3
-        res = {}
-        for attempt in range(max_retries):
-            res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
-            if 'error' in res:
-                err_msg = str(res['error'].get('message', '')).lower()
-                if 'high demand' in err_msg or '503' in err_msg or '429' in err_msg or 'overloaded' in err_msg:
-                    if attempt < max_retries - 1:
-                        time.sleep(2)  # Wait 2 seconds and retry
-                        continue
-                return jsonify({"success": True, "reply": f"Gemini API is experiencing High Demand right now. Please try again in a few seconds."})
-            break
-            
-        if 'candidates' in res and len(res['candidates']) > 0:
-            reply = res['candidates'][0]['content']['parts'][0]['text']
-            return jsonify({"success": True, "reply": reply})
-        else:
-            return jsonify({"success": True, "reply": f"AI returned an unexpected response: {str(res)}"})
-            
-    except Exception as e:
-        return jsonify({"success": True, "reply": f"Cloud AI failed: {str(e)}"})
+    result = call_ai_with_fallback(system_prompt, history_messages)
+    
+    # We return the exact dictionary format expected by the frontend
+    return jsonify(result)
 
 @app.route("/", methods=["GET"])
 def home(): return jsonify({"status": "API is running"})
