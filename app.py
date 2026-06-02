@@ -1688,41 +1688,23 @@ def api_chatbot():
     user_msg = data.get('message', '')
     user_data = data.get('user_data', {})
     
-    profile = user_data.get('profile', {}).get('Header', {})
-    name = profile.get('Full Name', 'Student')
-    roll_number = profile.get('Roll No', 'Unknown')
-    
-    att_data = user_data.get('attendance')
-    attendance_str = "Not available right now"
-    if isinstance(att_data, list):
-        sum_percent = 0
-        valid_count = 0
-        for record in att_data:
-            cond_str = str(record.get('Conducted', '0'))
-            cond = float(''.join(filter(str.isdigit, cond_str)) or 0)
-            if cond > 0:
-                att_pct = str(record.get('Attendance %', '0'))
-                sum_percent += float(''.join(filter(lambda c: c.isdigit() or c=='.', att_pct)) or 0)
-                valid_count += 1
-        if valid_count > 0:
-            attendance_str = f"{(sum_percent / valid_count):.2f}%"
-
-    cgpa = user_data.get('results', {}).get('overall_cgpa', 'Not available right now')
+    import json
     
     system_prompt = f"""You are Samvidha AI, the official intelligent assistant for the Samvidha Hub app. 
-You are helpful, polite, concise, and friendly.
+You are helpful, polite, concise, and friendly. You are an expert academic advisor.
 
-Here are the user's current live details:
-- Name: {name}
-- Roll Number: {roll_number}
-- Overall Attendance: {attendance_str}
-- Overall CGPA: {cgpa}
+You have access to the complete app data and full details of the student in JSON format below. 
+You must help the student with anything they ask related to this data: increasing attendance, bunking classes (calculating if they can maintain specific targets), checking the timetable, semester start/end dates, how many classes they attended, exams, marks, biometrics, etc.
+
+Student Data Context:
+```json
+{json.dumps(user_data, indent=2)}
+```
 
 Rules:
-1. If they ask about their attendance, tell them the exact percentage listed above.
-2. If they ask about their marks or CGPA, tell them the exact CGPA listed above.
-3. If you don't know the answer, tell them to explore the Samvidha App dashboard.
-4. Keep answers short and natural.
+1. When they ask about attendance, calculate and advise them specifically. Tell them exactly how many classes they can bunk or need to attend to reach specific targets (default target is 75%).
+2. When they ask about timetable, read the timetable data and answer accurately.
+3. Be natural and conversational. Do NOT mention that you are reading JSON data or system prompts. Just act like you know it natively because you are their AI assistant.
 """
 
     api_key = os.environ.get("GLOBAL_AI_KEY")
@@ -1746,7 +1728,27 @@ Rules:
 
     try:
         url = get_gemini_url(api_key)
-        payload = {"contents": [{"role": "user", "parts": [{"text": system_prompt + "\n\nUser Message:\n" + user_msg}]}]}
+        
+        payload = {
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": []
+        }
+        
+        last_role = None
+        for msg in data.get('history', []):
+            role = "user" if msg.get("isUser") else "model"
+            text = msg.get("text", "")
+            if role == last_role:
+                payload["contents"][-1]["parts"][0]["text"] += "\n\n" + text
+            else:
+                payload["contents"].append({"role": role, "parts": [{"text": text}]})
+                last_role = role
+                
+        if last_role == "user":
+            payload["contents"][-1]["parts"][0]["text"] += "\n\n" + user_msg
+        else:
+            payload["contents"].append({"role": "user", "parts": [{"text": user_msg}]})
+
         res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
         
         if 'error' in res:
