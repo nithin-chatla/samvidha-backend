@@ -1586,14 +1586,24 @@ def api_aat_solve():
 
     import requests
 
+    def get_gemini_url(key):
+        try:
+            models_res = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=10).json()
+            if 'models' in models_res:
+                for m in models_res['models']:
+                    # Look for models supporting generateContent and preferably gemini-1.5
+                    if 'generateContent' in m.get('supportedGenerationMethods', []) and 'gemini-1.5-flash' in m['name']:
+                        return f"https://generativelanguage.googleapis.com/v1beta/{m['name']}:generateContent?key={key}"
+                for m in models_res['models']:
+                    if 'generateContent' in m.get('supportedGenerationMethods', []) and 'gemini' in m['name']:
+                        return f"https://generativelanguage.googleapis.com/v1beta/{m['name']}:generateContent?key={key}"
+        except: pass
+        return f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
+        url = get_gemini_url(api_key)
         payload = {"contents": [{"role": "user", "parts": [{"text": system_prompt + "\n\n" + user_prompt}]}]}
-        res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}).json()
-        
-        if 'error' in res and 'not found' in res['error'].get('message', '').lower():
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
-            res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}).json()
+        res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
             
         if 'candidates' in res and len(res['candidates']) > 0:
             ai_response = res['candidates'][0]['content']['parts'][0]['text']
@@ -1720,15 +1730,24 @@ Rules:
         return jsonify({"success": True, "reply": "Error: Backend AI Key (GLOBAL_AI_KEY) is not configured on your server."})
 
     import requests
+
+    def get_gemini_url(key):
+        try:
+            models_res = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=10).json()
+            if 'models' in models_res:
+                for m in models_res['models']:
+                    if 'generateContent' in m.get('supportedGenerationMethods', []) and 'gemini-1.5-flash' in m['name']:
+                        return f"https://generativelanguage.googleapis.com/v1beta/{m['name']}:generateContent?key={key}"
+                for m in models_res['models']:
+                    if 'generateContent' in m.get('supportedGenerationMethods', []) and 'gemini' in m['name']:
+                        return f"https://generativelanguage.googleapis.com/v1beta/{m['name']}:generateContent?key={key}"
+        except: pass
+        return f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
+        url = get_gemini_url(api_key)
         payload = {"contents": [{"role": "user", "parts": [{"text": system_prompt + "\n\nUser Message:\n" + user_msg}]}]}
         res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
-        
-        # If the model is not found, fallback to gemini-pro which is universally available
-        if 'error' in res and 'not found' in res['error'].get('message', '').lower():
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
-            res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=15).json()
         
         if 'error' in res:
             return jsonify({"success": True, "reply": f"Gemini API Error: {res['error'].get('message', 'Unknown API Error')}"})
