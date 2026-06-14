@@ -1902,7 +1902,11 @@ Rules:
 2. When they ask about timetable, read the timetable data and answer accurately.
 3. If attendance, timetable, or lab data is completely empty or missing, intelligently deduce that the semester might be completed or holidays are active. Explicitly tell the user: "It looks like the semester is completed (or hasn't started yet), which is why your data isn't showing up right now."
 4. If they ask about semester dates, check the provided data for any date references (like exam dates or attendance last updated dates) to estimate when the semester ended.
-5. FORMATTING: Use `**bold**` formatting (double asterisks) to highlight important words like Subject Names, Overall Status, and Key Numbers. Use simple `-` dashes for bullet points. Do NOT use hash symbols (#).
+5. FORMATTING: 
+   - Use `**bold**` formatting to highlight important words.
+   - For links to features, ALWAYS use `[BUTTON:Label](samvidha://...)`. Do not use plain markdown links.
+   - For subject attendance, ALWAYS output `[PROGRESS:Value:Subject]` exactly.
+   - For timetables, ALWAYS output standard markdown tables (e.g. `| Time | Subject |`).
 6. Be natural and conversational. Do NOT mention that you are reading JSON data or system prompts. Just act like you know it natively because you are their AI assistant.
 """
 
@@ -1945,6 +1949,35 @@ def notify_anon_chat():
             topic=topic,
             data={
                 "route": "/anonymous_chat"
+            }
+        )
+        
+        response = messaging.send(push_msg)
+        return jsonify({"success": True, "message_id": response})
+    except Exception as e:
+        print(f"FCM Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/notify_admin_alert", methods=["POST"])
+def notify_admin_alert():
+    try:
+        data = request.json
+        title = data.get("title", "Important Update")
+        message = data.get("message", "")
+        
+        if len(message) > 60:
+            message = message[:57] + "..."
+            
+        topic = "admin_alerts"
+        
+        push_msg = messaging.Message(
+            notification=messaging.Notification(
+                title=f"🚨 {title}",
+                body=message,
+            ),
+            topic=topic,
+            data={
+                "route": "/dashboard"
             }
         )
         
