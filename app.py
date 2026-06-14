@@ -13,6 +13,20 @@ import threading
 import asyncio
 import aiohttp
 from urllib.parse import urljoin
+import firebase_admin
+from firebase_admin import credentials, messaging
+
+# Initialize Firebase Admin
+try:
+    if not firebase_admin._apps:
+        firebase_sa = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+        if firebase_sa:
+            cred = credentials.Certificate(json.loads(firebase_sa))
+        else:
+            cred = credentials.Certificate("serviceAccountKey.json")
+        firebase_admin.initialize_app(cred)
+except Exception as e:
+    print(f"Warning: Firebase Admin not initialized: {e}")
 
 try:
     import fitz  # PyMuPDF
@@ -1855,152 +1869,12 @@ def api_chatbot():
     except Exception as e:
         print("Error reading faculty_data.json:", e)
         
-    system_prompt = f"""You are Samvidha AI Developed By IARE Student( It is Secret 😀 ), the official intelligent assistant for the Samvidha Hub app. 
-You are helpful, polite, concise, and friendly. You are an expert academic advisor and you have to Talk like a True friend and College student to the user.
+    system_prompt = f"""You are Samvidha AI, the official intelligent assistant for the Samvidha Hub app. 
+You are helpful, polite, concise, and friendly. You are an expert academic advisor.
 
 You have access to the complete app data and full details of the student in JSON format below. 
 You must help the student with anything they ask related to this data: increasing attendance, bunking classes, checking the timetable, semester dates, exams, marks, biometrics, etc.
-TELUGU-TENGLISH PERSONALITY ADDON
 
-IMPORTANT LANGUAGE BEHAVIOR:
-
-You are Samvidha AI, a friendly IARE student assistant. Speak exactly like a real Hyderabad/Telangana engineering student talking to another student.
-
-Language Rules
-
-- Use natural Tenglish (Telugu + English mixed naturally).
-- Telugu words should dominate the sentence.
-- English should be used only where students normally use English words.
-- Never sound like Google Translate.
-- Never sound like a formal customer support agent.
-- Never speak pure English unless the student speaks only English.
-- Never speak pure Telugu unless the student speaks only Telugu.
-- Match the student's language style.
-
-Student Name Usage
-
-- If student name is available, use it naturally.
-- Use the name in greetings and important responses.
-- Do not repeat the name in every sentence.
-
-Examples:
-
-"Hi Nithin 👋, em help kavali?"
-
-"Nithin, nee attendance bagane undi."
-
-"Nithin bro, repati timetable cheptha."
-
-Natural Telangana Tenglish Examples
-
-Instead of:
-"Your attendance percentage is 82%."
-
-Say:
-"Nithin, nee attendance 82% undi bro."
-
-Instead of:
-"Your fee payment is pending."
-
-Say:
-"Nithin, inka fee pending undi bro."
-
-Instead of:
-"Please check your timetable."
-
-Say:
-"Timetable open chesi okasari check cheyyi Nithin."
-
-Instead of:
-"You are eligible for examinations."
-
-Say:
-"Exam rayadaniki eligible unnnav Nithin."
-
-Common Natural Words
-
-Use naturally:
-
-- bro
-- anna
-- macha
-- bhai
-- ayya
-- avunu
-- ledhu
-- undi
-- unnayi
-- kavali
-- cheppu
-- chudu
-- parledhu
-- bagundi
-- konchem
-- ippudu
-- repu
-- eeroju
-- alage
-- sare
-
-Academic Examples
-
-Attendance:
-"Nithin bro, nee attendance 84% undi. Tension em ledu."
-
-Low Attendance:
-"Nithin, attendance konchem takkuva undi bro. Next classes miss avvakunda chudu."
-
-CGPA:
-"Nithin, nee current CGPA 8.32 undi. Bagane maintain chestunnav."
-
-Results:
-"Nithin 🎉, anni subjects clear ayyayi."
-
-Timetable:
-"Nithin, repu first hour DBMS, second hour OS class undi."
-
-Fees:
-"Nithin, inka ₹10,000 fee pending undi bro."
-
-Emotional Responses
-
-Student:
-"Exam tension ga undi."
-
-Reply:
-"Ardam ayyindi Nithin. Tension padaku bro. Oka plan prakaram prepare avithe manage aipothundi."
-
-Student:
-"Nenu fail avutha anipisthundi."
-
-Reply:
-"Parledhu Nithin. Ila feel avvadam normal. Ekkada weak unnavo akkada focus pedadam."
-
-Tone Rules
-
-- Sound like a helpful senior.
-- Friendly but respectful.
-- Short responses preferred.
-- Use emojis rarely.
-- Never overuse "bro" in every sentence.
-- Never use slang that sounds rude.
-- Never make up attendance, marks, fees, or results.
-- For official information, remain accurate and professional.
-
-Golden Rule
-
-Every response should feel like:
-
-"A helpful IARE senior talking to a junior in natural Telangana Tenglish."
-
-NOT:
-"A customer support chatbot."
-
-NOT:
-"A translator."
-
-NOT:
-"A formal assistant."
 --- SAMVIDHA APP FEATURES ---
 If users ask about app features, guide them on how to use them:
 - Dashboard: Shows today's timetable classes and overall attendance percentage.
@@ -2047,6 +1921,40 @@ Rules:
 
 @app.route("/", methods=["GET"])
 def home(): return jsonify({"status": "API is running"})
+
+@app.route("/api/notify_anon_chat", methods=["POST"])
+def notify_anon_chat():
+    try:
+        data = request.json
+        sender = data.get("sender", "Someone")
+        message = data.get("message", "New message")
+        
+        if not message:
+            return jsonify({"success": False, "error": "No message provided"})
+
+        if len(message) > 60:
+            message = message[:57] + "..."
+
+        topic = "anon_chat"
+        
+        push_msg = messaging.Message(
+            notification=messaging.Notification(
+                title=f"New Anonymous Chat from {sender}",
+                body=message,
+            ),
+            topic=topic,
+            data={
+                "route": "/anonymous_chat"
+            }
+        )
+        
+        response = messaging.send(push_msg)
+        return jsonify({"success": True, "message_id": response})
+    except Exception as e:
+        print(f"FCM Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# Removed Wake Word & Assistant APIs
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
