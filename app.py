@@ -1987,6 +1987,37 @@ def notify_admin_alert():
         print(f"FCM Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route("/api/notify_messenger", methods=["POST"])
+def notify_messenger():
+    try:
+        data = request.json
+        sender = data.get("sender", "Someone")
+        recipient = data.get("recipient", "")
+        message = data.get("message", "")
+        
+        if not recipient:
+            return jsonify({"success": False, "error": "No recipient specified"}), 400
+            
+        topic = f"dm_{recipient}"
+        
+        push_msg = messaging.Message(
+            notification=messaging.Notification(
+                title=f"New message from {sender}",
+                body=message[:100] + ("..." if len(message) > 100 else ""),
+            ),
+            topic=topic,
+            data={
+                "route": "/messenger_chat",
+                "sender": sender
+            }
+        )
+        
+        response = messaging.send(push_msg)
+        return jsonify({"success": True, "message_id": response})
+    except Exception as e:
+        print(f"FCM Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 # Removed Wake Word & Assistant APIs
 
 if __name__ == "__main__":
