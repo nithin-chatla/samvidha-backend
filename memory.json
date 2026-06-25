@@ -106,4 +106,7 @@
 "branch_codes": {
 "CSM": "CSE (AI & ML)"
 }
+  "rules" : {
+    "Student must maintain 14 or 14+ marks in CIE exams to aloow to write Semester exams"
+  }
 }
