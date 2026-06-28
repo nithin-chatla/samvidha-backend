@@ -1311,6 +1311,17 @@ def api_login():
     SESSIONS[token] = session
     return jsonify({"ok": True, "token": token})
 
+@app.route("/logout", methods=["POST"])
+def api_logout():
+    h = request.headers.get("Authorization", "")
+    if h.startswith("Bearer "):
+        token = h.split(" ")[1]
+        if token in SESSIONS:
+            del SESSIONS[token]
+        if token in TOKENS:
+            del TOKENS[token]
+    return jsonify({"ok": True})
+
 @app.route("/profile", methods=["GET"])
 def api_profile():
     token = require_token()
@@ -1436,6 +1447,38 @@ def api_aat_delete():
         return jsonify({"ok": True, "message": "Deleted successfully!"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/api/notify_messenger", methods=["POST"])
+def api_notify_messenger():
+    try:
+        data = request.get_json() or {}
+        sender = data.get("sender")
+        recipient = data.get("recipient")
+        message = data.get("message")
+        
+        if not all([sender, recipient, message]):
+            return jsonify({"ok": False, "error": "Missing parameters"}), 400
+            
+        topic = f"dm_{recipient.upper()}"
+        
+        msg = messaging.Message(
+            notification=messaging.Notification(
+                title=f"New message from {sender}",
+                body=message,
+            ),
+            data={
+                "route": "/messenger_chat",
+                "sender": sender
+            },
+            topic=topic
+        )
+        
+        response = messaging.send(msg)
+        return jsonify({"ok": True, "message_id": response})
+    except Exception as e:
+        print(f"FCM Messenger Error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 
 @app.route("/all", methods=["GET"])
