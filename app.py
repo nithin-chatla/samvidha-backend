@@ -1324,19 +1324,18 @@ def scrape_qp_data(session, select_name, exam_code):
         def add_record(c_code, c_name, c_date, qp_raw, sol_raw):
             if not c_code or c_code.lower() in ["n/a", "course code"]: return
             if c_code in seen_codes: return
+            seen_codes.add(c_code)
             
             qp_link = extract_from_mixed(qp_raw)
             sol_link = extract_from_mixed(sol_raw)
             
-            if qp_link or sol_link:
-                data.append({
-                    "course_code": c_code,
-                    "course_name": c_name,
-                    "date": c_date,
-                    "qp_link": qp_link,
-                    "sol_link": sol_link
-                })
-                seen_codes.add(c_code)
+            data.append({
+                "course_code": c_code,
+                "course_name": c_name,
+                "date": c_date,
+                "qp_link": qp_link,
+                "sol_link": sol_link
+            })
 
         base_urls = [BASE + "/home?action=qp_scheme", BASE + "/home?action=qp_and_solution", BASE + "/home?action=labrecord_std"]
         hidden_payload = {}
