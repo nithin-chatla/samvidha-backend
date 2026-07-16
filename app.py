@@ -615,7 +615,12 @@ def scrape_profile_details(session):
         # 1. Basic Info
         basic = {}
         img = soup.find("img", class_="profile-user-img")
-        if img: basic["image_url"] = img.get("src")
+        if img:
+            src = img.get("src")
+            if src:
+                if not src.startswith("http"):
+                    src = BASE + "/" + src.lstrip("/")
+                basic["image_url"] = src
         name = soup.find("h3", class_="profile-username")
         if name: basic["name"] = name.text.strip()
         desc = soup.find("p", class_="text-muted")
