@@ -1373,6 +1373,8 @@ def scrape_qp_data(session, select_name, exam_code):
             r_ajax = session.post(primary_ajax_url, data=primary_payload, headers=headers, timeout=10)
             if r_ajax.status_code == 200:
                 if "{" in r_ajax.text:
+                    with open("qp_debug_full.txt", "a") as f:
+                        f.write("PRIMARY URL: " + primary_ajax_url + "\n" + r_ajax.text[:1000] + "\n\n")
                     try:
                         j = r_ajax.json()
                         if 'data' in j:
@@ -1425,11 +1427,16 @@ def scrape_qp_data(session, select_name, exam_code):
                     r2 = session.post(BASE + endpoint, data=payload, headers=headers, timeout=8)
                     if r2.status_code == 200:
                         if "{" in r2.text and "data" in r2.text:
+                            with open("qp_debug_full.txt", "a") as f:
+                                f.write("URL: " + endpoint + "\n" + r2.text[:1000] + "\n\n")
                             try:
                                 j = r2.json()
                                 if 'data' in j:
                                     for row in j['data']:
                                         if isinstance(row, dict):
+                                            with open("qp_debug.txt", "a") as f:
+                                                import json
+                                                f.write(json.dumps(row) + "\n")
                                             add_record(
                                                 row.get('sub_code', '').strip(),
                                                 row.get('sub_title', '').strip(),
