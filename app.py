@@ -1951,7 +1951,6 @@ Rules:
    - For subject attendance, ALWAYS output `[PROGRESS:Value:Subject]` exactly.
    - For timetables, ALWAYS output standard markdown tables (e.g. `| Time | Subject |`).
 6. Be natural and conversational. Do NOT mention that you are reading JSON data or system prompts. Just act like you know it natively because you are their AI assistant.
-7. Talk in Tenglish(Means Talking in telugu with English words , Like "Em chesthunnavu: , "Ni peru Naku thelusu" like this , dont make spelling mistakes and talk accuratly
 """
 
     history_messages = []
@@ -2008,21 +2007,19 @@ def notify_admin_alert():
         data = request.json
         title = data.get("title", "Important Update")
         message = data.get("message", "")
-        
-        if len(message) > 60:
-            message = message[:57] + "..."
-            
-        topic = "admin_alerts"
+        topic = data.get("topic", "admin_alerts")
+        route = data.get("route", "/dashboard")
         
         push_msg = messaging.Message(
-            notification=messaging.Notification(
-                title=f"🚨 {title}",
-                body=message,
-            ),
-            topic=topic,
+            # Send as a DATA-ONLY message so the Flutter app's NotificationParser
+            # can intercept it in the background, parse the macros, and display
+            # it natively using flutter_local_notifications without FCM showing raw text.
             data={
-                "route": "/dashboard"
-            }
+                "title": title,
+                "message": message,
+                "route": route
+            },
+            topic=topic,
         )
         
         response = messaging.send(push_msg)
