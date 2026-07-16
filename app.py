@@ -759,6 +759,53 @@ def scrape_fee_payment(session):
     except Exception as e:
         return {"ok": False, "error": str(e), "records": []}
 
+def scrape_fee_status(session):
+    try:
+        r = session.get(BASE + "/home?action=fee_payment_status", timeout=15)
+        check_auth(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        
+        table = soup.find("table")
+        if not table:
+            return {"ok": False, "error": "Table not found"}
+            
+        categories = []
+        current_category = None
+        current_rows = []
+        
+        for tr in table.find_all("tr"):
+            th_colspan = tr.find("th", colspan="4")
+            if th_colspan and tr.get("class") and any(c.startswith("bg-") for c in tr.get("class", [])):
+                if current_category:
+                    categories.append({"title": current_category, "rows": current_rows})
+                current_category = th_colspan.get_text(strip=True)
+                current_rows = []
+                continue
+                
+            if current_category:
+                cells = tr.find_all(["th", "td"])
+                if not cells: continue
+                
+                if len(cells) == 1 and "Nil" in cells[0].get_text(strip=True):
+                    continue
+                
+                is_header = bool(tr.find("th"))
+                row_data = [c.get_text(separator=" ", strip=True) for c in cells]
+                
+                if not any(row_data): continue
+                
+                current_rows.append({"is_header": is_header, "data": row_data})
+                
+        if current_category:
+            categories.append({"title": current_category, "rows": current_rows})
+            
+        return {"ok": True, "categories": categories}
+        
+    except SessionExpiredError:
+        raise
+    except Exception as e:
+        return {"ok": False, "error": str(e), "categories": []}
+
 # ==========================================
 # ALTERNATIVE ASSESSMENTS (AAI / AAT) SCRAPERS
 # ==========================================
@@ -1610,6 +1657,11 @@ def api_profile_details():
 def api_fee_payment():
     token = require_token()
     return jsonify(scrape_fee_payment(SESSIONS[token]))
+
+@app.route("/api/fee_status", methods=["POST"])
+def api_fee_status():
+    token = require_token()
+    return jsonify(scrape_fee_status(SESSIONS[token]))
 
 @app.route("/api/notify_messenger", methods=["POST"])
 def api_notify_messenger():
