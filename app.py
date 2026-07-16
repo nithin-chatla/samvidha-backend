@@ -606,6 +606,54 @@ def scrape_memos(session, username):
         print(f"Memos Error: {e}")
     return []
 
+def scrape_fee_payment(session):
+    try:
+        r = session.get(BASE + "/home?action=fee_payment", timeout=15)
+        check_auth(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        
+        fees = []
+        table = soup.find("table")
+        if table:
+            for tr in table.find_all("tr"):
+                cols = tr.find_all(["td", "th"])
+                # We need at least 6 cols and first col should be a number (S.No)
+                if len(cols) >= 6 and cols[0].get_text(strip=True).isdigit():
+                    fee_obj = {
+                        "sno": cols[0].get_text(strip=True),
+                        "fee_type": cols[1].get_text(separator="\n", strip=True),
+                        "track_id": cols[2].get_text(strip=True),
+                        "payment_date": cols[3].get_text(strip=True),
+                        "amount": cols[4].get_text(strip=True),
+                        "action": "Unknown",
+                        "action_url": ""
+                    }
+                    
+                    action_col = cols[5]
+                    
+                    # Check for Pay Now button
+                    a_tag = action_col.find("a", href=True)
+                    if a_tag:
+                        text = a_tag.get_text(strip=True).lower()
+                        fee_obj["action"] = a_tag.get_text(strip=True)
+                        if "pay" in text or "register" in text:
+                            fee_obj["action_url"] = a_tag["href"]
+                            if not fee_obj["action_url"].startswith("http"):
+                                fee_obj["action_url"] = BASE + "/" + fee_obj["action_url"].lstrip("/")
+                                
+                    # Check for Print Receipt button
+                    input_btn = action_col.find("input", type="button")
+                    if input_btn and "print" in input_btn.get("value", "").lower():
+                        fee_obj["action"] = "Print Receipt"
+                        fee_obj["action_url"] = "" 
+                        
+                    fees.append(fee_obj)
+        return {"ok": True, "records": fees}
+    except SessionExpiredError:
+        raise
+    except Exception as e:
+        return {"ok": False, "error": str(e), "records": []}
+
 # ==========================================
 # ALTERNATIVE ASSESSMENTS (AAI / AAT) SCRAPERS
 # ==========================================
@@ -1447,6 +1495,11 @@ def api_aat_delete():
         return jsonify({"ok": True, "message": "Deleted successfully!"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/api/fee_payment", methods=["POST"])
+def api_fee_payment():
+    token = require_token()
+    return jsonify(scrape_fee_payment(SESSIONS[token]))
 
 @app.route("/api/notify_messenger", methods=["POST"])
 def api_notify_messenger():
