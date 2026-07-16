@@ -606,6 +606,106 @@ def scrape_memos(session, username):
         print(f"Memos Error: {e}")
     return []
 
+def scrape_profile_details(session):
+    try:
+        r = session.get(BASE + "/home?action=profile", timeout=15)
+        check_auth(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        
+        # 1. Basic Info
+        basic = {}
+        img = soup.find("img", class_="profile-user-img")
+        if img: basic["image_url"] = img.get("src")
+        name = soup.find("h3", class_="profile-username")
+        if name: basic["name"] = name.text.strip()
+        desc = soup.find("p", class_="text-muted")
+        if desc: basic["branch_short"] = desc.text.strip()
+        
+        # Helper to parse dl rows
+        def parse_dl(card_header_text):
+            data = {}
+            header = soup.find("h3", string=re.compile(card_header_text, re.I))
+            if header:
+                card = header.find_parent("div", class_="card")
+                if card:
+                    dl = card.find("dl")
+                    if dl:
+                        dts = dl.find_all("dt")
+                        dds = dl.find_all("dd")
+                        for dt, dd in zip(dts, dds):
+                            data[dt.text.strip()] = dd.text.strip()
+            return data
+            
+        general = parse_dl("General")
+        admin = parse_dl("Administrative Information")
+        marks = parse_dl("Marks Details")
+        progress = parse_dl("Academic Progress")
+        
+        # Contacts
+        contacts = {}
+        c_header = soup.find("h3", string=re.compile("Contacts", re.I))
+        if c_header:
+            c_card = c_header.find_parent("div", class_="card")
+            if c_card:
+                c_body = c_card.find("div", class_="card-body")
+                if c_body:
+                    strongs = c_body.find_all("strong")
+                    for s in strongs:
+                        key = s.text.strip()
+                        p = s.find_next_sibling("p")
+                        if p:
+                            contacts[key] = p.text.strip()
+                            
+        # Policies / Certificates
+        def parse_table(title):
+            rows = []
+            th = soup.find("h3", string=re.compile(title, re.I))
+            if th:
+                card = th.find_parent("div", class_="card")
+                if card:
+                    table = card.find("table")
+                    if table:
+                        tr_list = table.find_all("tr")
+                        if len(tr_list) > 1:
+                            headers = [td.text.strip() for td in tr_list[0].find_all(["th", "td"])]
+                            for tr in tr_list[1:]:
+                                tds = tr.find_all(["th", "td"])
+                                row_data = {}
+                                for i, td in enumerate(tds):
+                                    if i < len(headers):
+                                        a = td.find("a")
+                                        if a:
+                                            row_data[headers[i]] = a.get("href")
+                                        else:
+                                            row_data[headers[i]] = td.text.strip()
+                                rows.append(row_data)
+            return rows
+            
+        policies = parse_table("Group Personal Accident Policy")
+        certificates = parse_table("Certificates List")
+        
+        # Conduct
+        conduct = ""
+        c_div = soup.find("h4", string=re.compile("Overall Conduct", re.I))
+        if c_div: conduct = c_div.text.strip()
+
+        return {
+            "ok": True,
+            "basic": basic,
+            "general": general,
+            "contacts": contacts,
+            "administrative": admin,
+            "marks": marks,
+            "academic_progress": progress,
+            "policies": policies,
+            "certificates": certificates,
+            "conduct": conduct
+        }
+    except SessionExpiredError:
+        raise
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 def scrape_fee_payment(session):
     try:
         r = session.get(BASE + "/home?action=fee_payment", timeout=15)
@@ -1495,6 +1595,11 @@ def api_aat_delete():
         return jsonify({"ok": True, "message": "Deleted successfully!"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/api/profile_details", methods=["POST"])
+def api_profile_details():
+    token = require_token()
+    return jsonify(scrape_profile_details(SESSIONS[token]))
 
 @app.route("/api/fee_payment", methods=["POST"])
 def api_fee_payment():
