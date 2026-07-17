@@ -1390,13 +1390,27 @@ def scrape_qp_data(session, select_name, exam_code):
                                         row.get('qp', ''),
                                         row.get('scheme', '')
                                     )
-                                elif isinstance(row, list) and len(row) >= 6:
-                                    add_record(
-                                        BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
-                                        BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True),
-                                        BeautifulSoup(str(row[3]), 'html.parser').get_text(strip=True),
-                                        str(row[4]), str(row[5])
-                                    )
+                                elif isinstance(row, list):
+                                    if len(row) >= 6:
+                                        add_record(
+                                            BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
+                                            BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True),
+                                            BeautifulSoup(str(row[3]), 'html.parser').get_text(strip=True),
+                                            str(row[4]), str(row[5])
+                                        )
+                                    elif len(row) == 5:
+                                        add_record(
+                                            BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
+                                            BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True),
+                                            "",
+                                            str(row[3]), str(row[4])
+                                        )
+                                    elif len(row) == 4:
+                                        add_record(
+                                            BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
+                                            "", "",
+                                            str(row[2]), str(row[3])
+                                        )
                     except Exception as e: 
                         print("JSON Parse Error:", e)
                 
@@ -1447,13 +1461,27 @@ def scrape_qp_data(session, select_name, exam_code):
                                                 row.get('qp', ''),
                                                 row.get('scheme', '')
                                             )
-                                        elif isinstance(row, list) and len(row) >= 6:
-                                            add_record(
-                                                BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
-                                                BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True),
-                                                BeautifulSoup(str(row[3]), 'html.parser').get_text(strip=True),
-                                                str(row[4]), str(row[5])
-                                            )
+                                        elif isinstance(row, list):
+                                            if len(row) >= 6:
+                                                add_record(
+                                                    BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
+                                                    BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True),
+                                                    BeautifulSoup(str(row[3]), 'html.parser').get_text(strip=True),
+                                                    str(row[4]), str(row[5])
+                                                )
+                                            elif len(row) == 5:
+                                                add_record(
+                                                    BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
+                                                    BeautifulSoup(str(row[2]), 'html.parser').get_text(strip=True),
+                                                    "",
+                                                    str(row[3]), str(row[4])
+                                                )
+                                            elif len(row) == 4:
+                                                add_record(
+                                                    BeautifulSoup(str(row[1]), 'html.parser').get_text(strip=True),
+                                                    "", "",
+                                                    str(row[2]), str(row[3])
+                                                )
                                     if data: return {"ok": True, "records": data}
                             except: pass
                         html_content += r2.text
@@ -1462,16 +1490,26 @@ def scrape_qp_data(session, select_name, exam_code):
         soup = BeautifulSoup(html_content, "html.parser")
         for tr in soup.find_all("tr"):
             cols = tr.find_all(["td", "th"])
-            if len(cols) >= 6:
-                s_no_cell = cols[0].get_text(strip=True)
-                if s_no_cell.isdigit():
-                    add_record(
-                        cols[1].get_text(strip=True),
-                        cols[2].get_text(strip=True),
-                        cols[3].get_text(strip=True),
-                        str(cols[4]),
-                        str(cols[5])
-                    )
+            if len(cols) >= 4:
+                # If there are no links, it's probably not a paper row
+                has_link = any(col.find('a') or 'window.open' in str(col) for col in cols)
+                if not has_link: continue
+                
+                if len(cols) >= 6:
+                    if cols[0].get_text(strip=True).isdigit():
+                        add_record(cols[1].get_text(strip=True), cols[2].get_text(strip=True), cols[3].get_text(strip=True), str(cols[4]), str(cols[5]))
+                    else:
+                        add_record(cols[0].get_text(strip=True), cols[1].get_text(strip=True), cols[2].get_text(strip=True), str(cols[3]), str(cols[4]))
+                elif len(cols) == 5:
+                    if cols[0].get_text(strip=True).isdigit():
+                        add_record(cols[1].get_text(strip=True), cols[2].get_text(strip=True), "", str(cols[3]), str(cols[4]))
+                    else:
+                        add_record(cols[0].get_text(strip=True), cols[1].get_text(strip=True), "", str(cols[2]), str(cols[3]))
+                elif len(cols) == 4:
+                    if cols[0].get_text(strip=True).isdigit():
+                        add_record("Course", cols[1].get_text(strip=True), "", str(cols[2]), str(cols[3]))
+                    else:
+                        add_record(cols[0].get_text(strip=True), "Course", "", str(cols[2]), str(cols[3]))
         
         return {"ok": True, "records": data}
     except SessionExpiredError:
