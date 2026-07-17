@@ -1340,15 +1340,28 @@ def scrape_qp_data(session, select_name, exam_code):
                 "sol_link": sol_link
             })
 
-        base_urls = [BASE + "/home?action=qp_scheme", BASE + "/home?action=qp_and_solution", BASE + "/home?action=labrecord_std"]
+        base_urls = [
+            BASE + "/home?action=qp_scheme", BASE + "/home?action=qp_and_solution", 
+            BASE + "/home?action=qp_and_solutions", BASE + "/home?action=question_paper",
+            BASE + "/home?action=labrecord_std", BASE + "/home?action=profile"
+        ]
         hidden_payload = {}
         for burl in base_urls:
             try:
-                r_base = session.get(burl, timeout=10)
+                r_base = session.get(burl, timeout=8)
                 soup_base = BeautifulSoup(r_base.text, 'html.parser')
-                for inp in soup_base.find_all('input', type='hidden'):
-                    if inp.get('name') and inp.get('value'):
-                        hidden_payload[inp.get('name')] = inp.get('value')
+                for inp in soup_base.find_all(['input', 'select']):
+                    name = inp.get('name') or inp.get('id')
+                    if name and inp.get('value'):
+                        hidden_payload[name] = inp.get('value')
+                
+                dept_m = re.search(r'name=["\']?dept_id["\']?\s+value=["\']?(\d+)["\']?', r_base.text, re.IGNORECASE)
+                if dept_m: hidden_payload['dept_id'] = dept_m.group(1)
+                
+                if 'dept_id' not in hidden_payload:
+                    dept_m2 = re.search(r'dept_id\s*[:=]\s*["\']?(\d+)["\']?', r_base.text, re.IGNORECASE)
+                    if dept_m2: hidden_payload['dept_id'] = dept_m2.group(1)
+
                 if 'dept_id' in hidden_payload:
                     break 
             except: pass
@@ -1365,7 +1378,8 @@ def scrape_qp_data(session, select_name, exam_code):
         primary_payload = {
             "exam_code": exam_code,
             "dept_id": dept_id,
-            "action": "get_qp_scheme_list"
+            "action": "get_qp_scheme_list",
+            "draw": "1", "start": "0", "length": "100"
         }
         
         for k, v in hidden_payload.items():
@@ -1436,8 +1450,16 @@ def scrape_qp_data(session, select_name, exam_code):
                     payload = {
                         select_name: exam_code, "exam_code": exam_code, "examCode": exam_code,
                         "dept_id": dept_id, "action": action_val,
-                        "draw": "1", "start": "0", "length": "100"
+                        "draw": "1", "start": "0", "length": "100",
+                        "search[value]": "", "search[regex]": "false"
                     }
+                    for i in range(7):
+                        payload[f"columns[{i}][data]"] = str(i)
+                        payload[f"columns[{i}][searchable]"] = "true"
+                        payload[f"columns[{i}][orderable]"] = "true"
+                        payload[f"columns[{i}][search][value]"] = ""
+                        payload[f"columns[{i}][search][regex]"] = "false"
+                        
                     for k, v in hidden_payload.items():
                         if k not in payload: payload[k] = v
                         
