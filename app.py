@@ -1511,6 +1511,8 @@ def scrape_qp_data(session, select_name, exam_code):
                     else:
                         add_record(cols[0].get_text(strip=True), "Course", "", str(cols[2]), str(cols[3]))
         
+        if not data:
+            return {"ok": True, "records": [], "debug": {"html": html_content[:3000], "hidden": hidden_payload}}
         return {"ok": True, "records": data}
     except SessionExpiredError:
         raise
