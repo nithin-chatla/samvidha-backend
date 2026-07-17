@@ -1260,6 +1260,8 @@ def scrape_qp_init(session):
             for select in soup.find_all('select'):
                 opts = select.find_all('option')
                 if len(opts) > 1:
+                    has_exam_keywords = any("SEMESTER" in opt.get_text(strip=True).upper() or "B.TECH" in opt.get_text(strip=True).upper() or "SEE" in opt.get_text(strip=True).upper() for opt in opts)
+                    if not has_exam_keywords: continue
                     select_name = select.get('name', 'exam_code')
                     for opt in opts:
                         val = opt.get('value', '').strip()
@@ -1274,7 +1276,8 @@ def scrape_qp_init(session):
                                 "sem_val": sem_val,
                                 "is_see": is_see
                             })
-                    break
+                    if options:
+                        break
             
             if options:
                 # Beautifully sort by Semester (Descending), SEE before CIE, and Alphabetical
