@@ -1343,7 +1343,7 @@ def scrape_qp_data(session, select_name, exam_code):
         base_urls = [
             BASE + "/home?action=qp_scheme", BASE + "/home?action=qp_and_solution", 
             BASE + "/home?action=qp_and_solutions", BASE + "/home?action=question_paper",
-            BASE + "/home?action=labrecord_std", BASE + "/home?action=profile"
+            BASE + "/home?action=labrecord_std", BASE + "/pages/student/profile.php"
         ]
         hidden_payload = {}
         for burl in base_urls:
@@ -1379,7 +1379,8 @@ def scrape_qp_data(session, select_name, exam_code):
             "exam_code": exam_code,
             "dept_id": dept_id,
             "action": "get_qp_scheme_list",
-            "draw": "1", "start": "0", "length": "100"
+            "draw": "1", "start": "0", "length": "100",
+            "order[0][column]": "0", "order[0][dir]": "asc"
         }
         
         for k, v in hidden_payload.items():
@@ -1451,7 +1452,8 @@ def scrape_qp_data(session, select_name, exam_code):
                         select_name: exam_code, "exam_code": exam_code, "examCode": exam_code,
                         "dept_id": dept_id, "action": action_val,
                         "draw": "1", "start": "0", "length": "100",
-                        "search[value]": "", "search[regex]": "false"
+                        "search[value]": "", "search[regex]": "false",
+                        "order[0][column]": "0", "order[0][dir]": "asc"
                     }
                     for i in range(7):
                         payload[f"columns[{i}][data]"] = str(i)
