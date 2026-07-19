@@ -38,6 +38,9 @@ except ImportError:
 app = Flask(__name__)
 CORS(app)
 
+# Global Thread Pool to prevent out-of-memory thread exhaustion under high traffic
+scraping_executor = concurrent.futures.ThreadPoolExecutor(max_workers=30)
+
 BASE = "https://samvidha.iare.ac.in"
 LOGIN_URL = BASE + "/pages/login/checkUser.php"
 
@@ -1736,54 +1739,20 @@ def api_fee_status():
     token = require_token()
     return jsonify(scrape_fee_status(SESSIONS[token]))
 
-@app.route("/api/notify_messenger", methods=["POST"])
-def api_notify_messenger():
-    try:
-        data = request.get_json() or {}
-        sender = data.get("sender")
-        recipient = data.get("recipient")
-        message = data.get("message")
-        
-        if not all([sender, recipient, message]):
-            return jsonify({"ok": False, "error": "Missing parameters"}), 400
-            
-        topic = f"dm_{recipient.upper()}"
-        
-        msg = messaging.Message(
-            notification=messaging.Notification(
-                title=f"New message from {sender}",
-                body=message,
-            ),
-            data={
-                "route": "/messenger_chat",
-                "sender": sender
-            },
-            topic=topic
-        )
-        
-        response = messaging.send(msg)
-        return jsonify({"ok": True, "message_id": response})
-    except Exception as e:
-        print(f"FCM Messenger Error: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-
 @app.route("/all", methods=["GET"])
 def api_all():
     token = require_token()
     session = SESSIONS[token]
     username = TOKENS[token]["username"]  
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
-            f_att = executor.submit(scrape_attendance, session)
-            f_bio = executor.submit(scrape_biometric, session)
-            f_mid = executor.submit(scrape_midmarks, session)
-            f_pro = executor.submit(scrape_profile, session, username)
-            f_res = executor.submit(scrape_results, session)
-            f_mem = executor.submit(scrape_memos, session, username)
-            f_tt  = executor.submit(scrape_timetable, session, None, None)
-            
+        f_att = scraping_executor.submit(scrape_attendance, session)
+        f_bio = scraping_executor.submit(scrape_biometric, session)
+        f_mid = scraping_executor.submit(scrape_midmarks, session)
+        f_pro = scraping_executor.submit(scrape_profile, session, username)
+        f_res = scraping_executor.submit(scrape_results, session)
+        f_mem = scraping_executor.submit(scrape_memos, session, username)
+        f_tt  = scraping_executor.submit(scrape_timetable, session, None, None)
+        
         results_info = f_res.result()
         results_info["memos"] = f_mem.result()
         
@@ -2200,7 +2169,7 @@ def api_chatbot():
     except Exception as e:
         print("Error reading faculty_data.json:", e)
         
-    system_prompt = f"""You are Samvidha AI, the official intelligent assistant for the Samvidha Hub app. 
+    system_prompt = f"""You are Samvidha AI, the official intelligent assistant for the Samvidha IARE app. 
 You are helpful, polite, concise, and friendly. You are an expert academic advisor.
 
 You have access to the complete app data and full details of the student in JSON format below. 
@@ -2272,10 +2241,25 @@ def notify_anon_chat():
 
         topic = "anon_chat"
         
+        # Truncate title
+        title = f"👻 Anon: {sender}"
+        if len(title) > 35:
+            title = title[:32] + "..."
+            
+        # Truncate message strongly for clean notifications
+        if len(message) > 60:
+            message = message[:57] + "..."
+        
         push_msg = messaging.Message(
             notification=messaging.Notification(
-                title=f"New Anonymous Chat from {sender}",
+                title=title,
                 body=message,
+            ),
+            android=messaging.AndroidConfig(
+                collapse_key="anon_chat"
+            ),
+            apns=messaging.APNSConfig(
+                headers={"apns-collapse-id": "anon_chat"}
             ),
             topic=topic,
             data={
@@ -2327,12 +2311,28 @@ def notify_messenger():
         if not recipient:
             return jsonify({"success": False, "error": "No recipient specified"}), 400
             
-        topic = f"dm_{recipient}"
+        topic = f"dm_{recipient.upper()}"
+        
+        # Add emojis and keep title short
+        title = f"💬 {sender}"
+        if len(title) > 35:
+            title = title[:32] + "..."
+            
+        if len(message) > 60:
+            message = message[:57] + "..."
+        
+        collapse_key_val = f"dm_{sender}"
         
         push_msg = messaging.Message(
             notification=messaging.Notification(
-                title=f"New message from {sender}",
-                body=message[:100] + ("..." if len(message) > 100 else ""),
+                title=title,
+                body=message,
+            ),
+            android=messaging.AndroidConfig(
+                collapse_key=collapse_key_val
+            ),
+            apns=messaging.APNSConfig(
+                headers={"apns-collapse-id": collapse_key_val}
             ),
             topic=topic,
             data={
