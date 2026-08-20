@@ -262,11 +262,15 @@ def login_session(username, password):
         
         j = res.json()
         if j.get("status") == "1":
+            # Persist CSRF token in session headers so ALL future POST requests include it.
+            # This future-proofs against the college enforcing CSRF on authenticated AJAX endpoints.
+            if csrf_token:
+                session.headers.update({"X-CSRF-TOKEN": csrf_token})
             return session, None
         return None, "invalid_credentials"
     except Exception as e:
-        print(f"Login error: {e}")
-        return None, "network_error"
+        print(f"Login error: {str(e)}")
+        return None, f"network_error: {str(e)}"
 
 def scrape_attendance(session):
     try:
