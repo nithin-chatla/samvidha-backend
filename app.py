@@ -224,23 +224,48 @@ def check_auth(r):
 
 def login_session(username, password):
     session = requests.Session()
-    headers = {
-        "Host": "samvidha.iare.ac.in",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Origin": BASE,
-        "Referer": BASE + "/",
-        "X-Requested-With": "XMLHttpRequest",
-    }
-    payload = {"username": username, "password": password}
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    })
     try:
+        # Step 1: GET the login page to obtain CSRF token and fresh PHPSESSID cookie
+        login_page = session.get(BASE + "/", timeout=20)
+        csrf_token = ""
+        soup = BeautifulSoup(login_page.text, "lxml")
+        
+        # The college site stores CSRF in: <meta name="csrf-token" content="...">
+        csrf_meta = soup.find("meta", {"name": "csrf-token"})
+        if csrf_meta:
+            csrf_token = csrf_meta.get("content", "")
+        
+        # Fallback: try hidden input (currently commented out on their site, but may come back)
+        if not csrf_token:
+            csrf_input = soup.find("input", {"name": re.compile(r"csrf", re.I)})
+            if csrf_input:
+                csrf_token = csrf_input.get("value", "")
+
+        # Step 2: POST login with CSRF token as HTTP header (X-CSRF-TOKEN)
+        headers = {
+            "Host": "samvidha.iare.ac.in",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": BASE,
+            "Referer": BASE + "/",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        if csrf_token:
+            headers["X-CSRF-TOKEN"] = csrf_token
+        
+        payload = {"username": username, "password": password}
         res = session.post(LOGIN_URL, data=payload, headers=headers, timeout=20)
+        
         j = res.json()
         if j.get("status") == "1":
             return session, None
         return None, "invalid_credentials"
     except Exception as e:
+        print(f"Login error: {e}")
         return None, "network_error"
 
 def scrape_attendance(session):
