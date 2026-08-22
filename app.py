@@ -560,8 +560,7 @@ def scrape_results(session):
                     if match: 
                         if current_sem_data:
                             current_sem_data["cgpa"] = match.group(1)
-                        if overall_cgpa == "N/A":
-                            overall_cgpa = match.group(1) 
+                        overall_cgpa = match.group(1) 
                     continue
                 
                 if not current_sem_data: continue
