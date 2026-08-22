@@ -1644,13 +1644,18 @@ def rasterize_and_compress_pdf(file_bytes):
     images[0].save(output_io, format="PDF", resolution=100.0, save_all=True, append_images=images[1:], quality=50, optimize=True)
     return output_io.getvalue()
 
+def safe_b64decode(s):
+    s = s.replace('-', '+').replace('_', '/')
+    s += '=' * (-len(s) % 4)
+    return base64.b64decode(s)
+
 def require_token():
     h = request.headers.get("Authorization", "")
     if not h.startswith("Bearer "): abort(401)
     token_str = h.split(" ")[1]
     
     try:
-        token_data = json.loads(base64.urlsafe_b64decode(token_str).decode())
+        token_data = json.loads(safe_b64decode(token_str).decode())
         
         session = requests.Session()
         session.headers.update({
