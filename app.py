@@ -1,11 +1,12 @@
 import requests
 import os
 import concurrent.futures
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify, abort, g
 from flask_cors import CORS
 from bs4 import BeautifulSoup
 import secrets
 import time
+import base64
 import re
 import io
 import json
@@ -44,8 +45,20 @@ scraping_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
 BASE = "https://samvidha.iare.ac.in"
 LOGIN_URL = BASE + "/pages/login/checkUser.php"
 
-TOKENS = {}
-SESSIONS = {}
+class SessionProxy:
+    def __getitem__(self, key): return g.session
+    def __contains__(self, key): return True
+    def __setitem__(self, key, value): pass
+    def __delitem__(self, key): pass
+
+class TokenProxy:
+    def __getitem__(self, key): return {"username": getattr(g, "username", "")}
+    def __contains__(self, key): return True
+    def __setitem__(self, key, value): pass
+    def __delitem__(self, key): pass
+
+TOKENS = TokenProxy()
+SESSIONS = SessionProxy()
 
 # ==========================================
 # FACULTY AUTO-SCRAPER (24-HOUR DAEMON)
@@ -260,17 +273,22 @@ def login_session(username, password):
         payload = {"username": username, "password": password}
         res = session.post(LOGIN_URL, data=payload, headers=headers, timeout=20)
         
-        j = res.json()
+        if res.status_code != 200:
+            return None, f"server_error_{res.status_code}: {res.text[:50]}"
+            
+        try:
+            j = res.json()
+        except Exception as e:
+            return None, f"json_error: {res.text[:50]}"
+            
         if j.get("status") == "1":
-            # Persist CSRF token in session headers so ALL future POST requests include it.
-            # This future-proofs against the college enforcing CSRF on authenticated AJAX endpoints.
             if csrf_token:
                 session.headers.update({"X-CSRF-TOKEN": csrf_token})
             return session, None
         return None, "invalid_credentials"
     except Exception as e:
         print(f"Login error: {str(e)}")
-        return None, f"network_error: {str(e)}"
+        return None, f"exception: {str(e)}"
 
 def scrape_attendance(session):
     try:
@@ -1629,9 +1647,24 @@ def rasterize_and_compress_pdf(file_bytes):
 def require_token():
     h = request.headers.get("Authorization", "")
     if not h.startswith("Bearer "): abort(401)
-    token = h.split(" ")[1]
-    if token not in TOKENS: abort(401)
-    return token
+    token_str = h.split(" ")[1]
+    
+    try:
+        token_data = json.loads(base64.urlsafe_b64decode(token_str).decode())
+        
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        })
+        if token_data.get("x"):
+            session.headers.update({"X-CSRF-TOKEN": token_data["x"]})
+        session.cookies.update(token_data.get("c", {}))
+        
+        g.session = session
+        g.username = token_data.get("u", "")
+        return token_str
+    except Exception:
+        abort(401)
 
 @app.route("/check_update", methods=["GET"])
 def check_update():
@@ -1648,20 +1681,24 @@ def api_login():
     if not username or not password: return jsonify({"ok": False, "error": "missing_credentials"}), 400
     session, err = login_session(username, password)
     if not session: return jsonify({"ok": False, "error": err}), 401
-    token = secrets.token_urlsafe(24)
-    TOKENS[token] = {"username": username, "time": time.time()}
-    SESSIONS[token] = session
-    return jsonify({"ok": True, "token": token})
+    
+    # Create a completely stateless token that contains the session data
+    token_data = {
+        "u": username,
+        "c": session.cookies.get_dict(),
+        "x": session.headers.get("X-CSRF-TOKEN", "")
+    }
+    
+    try:
+        token = base64.urlsafe_b64encode(json.dumps(token_data).encode()).decode()
+        return jsonify({"ok": True, "token": token})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"token_generation_failed: {str(e)}"}), 500
 
 @app.route("/logout", methods=["POST"])
 def api_logout():
-    h = request.headers.get("Authorization", "")
-    if h.startswith("Bearer "):
-        token = h.split(" ")[1]
-        if token in SESSIONS:
-            del SESSIONS[token]
-        if token in TOKENS:
-            del TOKENS[token]
+    # Since tokens are entirely stateless now, there's nothing to delete from memory.
+    # The client just deletes the token locally.
     return jsonify({"ok": True})
 
 @app.route("/profile", methods=["GET"])
