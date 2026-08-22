@@ -226,7 +226,7 @@ class SessionExpiredError(Exception): pass
 
 @app.errorhandler(SessionExpiredError)
 def handle_session_expired(e):
-    return jsonify({"ok": False, "error": "session_expired"}), 401
+    return jsonify({"ok": False, "error": "session_expired"}), 503
 
 def check_auth(r):
     url = r.url.lower()
@@ -1649,6 +1649,27 @@ def safe_b64decode(s):
     s += '=' * (-len(s) % 4)
     return base64.b64decode(s)
 
+def _build_session_from_token(token_data):
+    """Build a requests.Session from decoded token data."""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    })
+    if token_data.get("x"):
+        session.headers.update({"X-CSRF-TOKEN": token_data["x"]})
+    session.cookies.update(token_data.get("c", {}))
+    return session
+
+def _make_new_token(username, session, password=""):
+    """Create a fresh stateless token from a live session."""
+    token_data = {
+        "u": username,
+        "c": session.cookies.get_dict(),
+        "x": session.headers.get("X-CSRF-TOKEN", ""),
+        "p": password
+    }
+    return base64.urlsafe_b64encode(json.dumps(token_data).encode()).decode()
+
 def require_token():
     h = request.headers.get("Authorization", "")
     if not h.startswith("Bearer "): abort(401)
@@ -1656,20 +1677,41 @@ def require_token():
     
     try:
         token_data = json.loads(safe_b64decode(token_str).decode())
-        
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        })
-        if token_data.get("x"):
-            session.headers.update({"X-CSRF-TOKEN": token_data["x"]})
-        session.cookies.update(token_data.get("c", {}))
+        session = _build_session_from_token(token_data)
         
         g.session = session
         g.username = token_data.get("u", "")
+        g.password = token_data.get("p", "")
+        g.token_refreshed = False
         return token_str
     except Exception:
         abort(401)
+
+def _relogin_and_refresh_session():
+    """Re-login to college using embedded password and refresh g.session.
+    Returns True if re-login succeeded, False otherwise."""
+    username = getattr(g, 'username', '')
+    password = getattr(g, 'password', '')
+    if not username or not password:
+        return False
+    try:
+        new_session, err = login_session(username, password)
+        if new_session:
+            g.session = new_session
+            g.token_refreshed = True
+            # Update the proxy so SESSIONS[token] also returns the new session
+            return True
+    except Exception as e:
+        print(f"Auto-relogin failed for {username}: {e}")
+    return False
+
+@app.after_request
+def attach_new_token(response):
+    """If we re-logged in during this request, send new token to client."""
+    if getattr(g, 'token_refreshed', False):
+        new_token = _make_new_token(g.username, g.session, g.password)
+        response.headers['X-New-Token'] = new_token
+    return response
 
 @app.route("/check_update", methods=["GET"])
 def check_update():
@@ -1687,15 +1729,9 @@ def api_login():
     session, err = login_session(username, password)
     if not session: return jsonify({"ok": False, "error": err}), 401
     
-    # Create a completely stateless token that contains the session data
-    token_data = {
-        "u": username,
-        "c": session.cookies.get_dict(),
-        "x": session.headers.get("X-CSRF-TOKEN", "")
-    }
-    
+    # Create a completely stateless token that contains the session data + password for auto-relogin
     try:
-        token = base64.urlsafe_b64encode(json.dumps(token_data).encode()).decode()
+        token = _make_new_token(username, session, password)
         return jsonify({"ok": True, "token": token})
     except Exception as e:
         return jsonify({"ok": False, "error": f"token_generation_failed: {str(e)}"}), 500
@@ -1709,35 +1745,67 @@ def api_logout():
 @app.route("/profile", methods=["GET"])
 def api_profile():
     token = require_token()
-    return jsonify({"profile": scrape_profile(SESSIONS[token], TOKENS[token]["username"])})
+    try:
+        return jsonify({"profile": scrape_profile(SESSIONS[token], TOKENS[token]["username"])})
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            return jsonify({"profile": scrape_profile(g.session, g.username)})
+        raise
 
 @app.route("/attendance", methods=["GET"])
 def api_attendance():
     token = require_token()
-    return jsonify({"attendance": scrape_attendance(SESSIONS[token]), "biometric": scrape_biometric(SESSIONS[token])})
+    try:
+        return jsonify({"attendance": scrape_attendance(SESSIONS[token]), "biometric": scrape_biometric(SESSIONS[token])})
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            return jsonify({"attendance": scrape_attendance(g.session), "biometric": scrape_biometric(g.session)})
+        raise
 
 @app.route("/course_delivery", methods=["GET"])
 def api_course_delivery():
     token = require_token()
-    return jsonify({"course_content": scrape_course_content(SESSIONS[token])})
+    try:
+        return jsonify({"course_content": scrape_course_content(SESSIONS[token])})
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            return jsonify({"course_content": scrape_course_content(g.session)})
+        raise
 
 @app.route("/results", methods=["GET"])
 def api_results():
     token = require_token()
-    results_info = scrape_results(SESSIONS[token])
-    results_info["memos"] = scrape_memos(SESSIONS[token], TOKENS[token]["username"])
-    return jsonify({"results": results_info})
+    try:
+        results_info = scrape_results(SESSIONS[token])
+        results_info["memos"] = scrape_memos(SESSIONS[token], TOKENS[token]["username"])
+        return jsonify({"results": results_info})
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            results_info = scrape_results(g.session)
+            results_info["memos"] = scrape_memos(g.session, g.username)
+            return jsonify({"results": results_info})
+        raise
 
 @app.route("/marks", methods=["GET"])
 def api_marks():
     token = require_token()
-    return jsonify({"midmarks": scrape_midmarks(SESSIONS[token])})
+    try:
+        return jsonify({"midmarks": scrape_midmarks(SESSIONS[token])})
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            return jsonify({"midmarks": scrape_midmarks(g.session)})
+        raise
 
 @app.route("/timetable", methods=["POST"])
 def api_timetable():
     token = require_token()
     data = request.get_json() or {}
-    return jsonify(scrape_timetable(SESSIONS[token], data.get("ay"), data.get("section")))
+    try:
+        return jsonify(scrape_timetable(SESSIONS[token], data.get("ay"), data.get("section")))
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            return jsonify(scrape_timetable(g.session, data.get("ay"), data.get("section")))
+        raise
 
 @app.route("/qp_init", methods=["GET"])
 def api_qp_init():
