@@ -2005,20 +2005,20 @@ def api_all():
                 f_res = scraping_executor.submit(scrape_results, g.session)
                 f_mem = scraping_executor.submit(scrape_memos, g.session, g.username)
                 f_tt  = scraping_executor.submit(scrape_timetable, g.session, None, None)
-            results_info = f_res.result() or {"semesters": [], "overall_cgpa": "N/A"}
-            memos_info = f_mem.result()
-            if memos_info:
-                results_info["memos"] = memos_info
-                
-            return jsonify({
-                "ok": True, 
-                "attendance": f_att.result() or {"records": [], "last_date": ""}, 
-                "biometric": f_bio.result() or [], 
-                "midmarks": f_mid.result() or {"theory": [], "laboratory": []}, 
-                "profile": f_pro.result() or {"Header": {"Roll Number": g.username.upper()}, "Sections": {}, "Documents": {}}, 
-                "results": results_info, 
-                "timetable_init": f_tt.result() or {"ays": [], "sections": [], "schedule": [], "subjects": []}
-            })
+                results_info = f_res.result() or {"semesters": [], "overall_cgpa": "N/A"}
+                memos_info = f_mem.result()
+                if memos_info:
+                    results_info["memos"] = memos_info
+                    
+                return jsonify({
+                    "ok": True, 
+                    "attendance": f_att.result() or {"records": [], "last_date": ""}, 
+                    "biometric": f_bio.result() or [], 
+                    "midmarks": f_mid.result() or {"theory": [], "laboratory": []}, 
+                    "profile": f_pro.result() or {"Header": {"Roll Number": g.username.upper()}, "Sections": {}, "Documents": {}}, 
+                    "results": results_info, 
+                    "timetable_init": f_tt.result() or {"ays": [], "sections": [], "schedule": [], "subjects": []}
+                })
             except SessionExpiredError:
                 raise
         raise
