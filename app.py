@@ -554,18 +554,22 @@ def scrape_results(session):
                     if current_sem_data: results_data.append(current_sem_data)
                     current_sem_data = {"semester": text.strip(), "subjects": [], "sgpa": "N/A", "cgpa": "N/A"}
                     continue
+                
+                if "CUMULATIVE GRADE POINT AVERAGE" in text:
+                    match = re.search(r'CGPA[^\d]*([\d\.]+)', text)
+                    if match: 
+                        if current_sem_data:
+                            current_sem_data["cgpa"] = match.group(1)
+                        if overall_cgpa == "N/A":
+                            overall_cgpa = match.group(1) 
+                    continue
+                
                 if not current_sem_data: continue
                 if "SEMESTER GRADE POINT AVERAGE" in text:
                     match = re.search(r'SGPA[^\d]*([\d\.]+)', text)
                     if match: current_sem_data["sgpa"] = match.group(1)
                     continue
-                if "CUMULATIVE GRADE POINT AVERAGE" in text:
-                    match = re.search(r'CGPA[^\d]*([\d\.]+)', text)
-                    if match: 
-                        current_sem_data["cgpa"] = match.group(1)
-                        if overall_cgpa == "N/A":
-                            overall_cgpa = match.group(1) 
-                    continue
+                
                 cols = row.find_all(['td', 'th'])
                 if len(cols) >= 8 and cols[0].get_text(strip=True).isdigit():
                     grade = cols[3].get_text(strip=True)
@@ -577,36 +581,6 @@ def scrape_results(session):
                         "status": status, "credits": cols[6].get_text(strip=True), "is_backlog": is_backlog
                     })
             if current_sem_data: results_data.append(current_sem_data)
-            
-            # Calculate true CGPA manually to handle cleared backlogs properly
-            try:
-                best_subjects = {}
-                for sem in results_data:
-                    for sub in sem.get("subjects", []):
-                        code = sub.get("code", "")
-                        if not code: continue
-                        try:
-                            credits = float(sub.get("credits", 0))
-                            points = float(sub.get("points", 0))
-                        except ValueError:
-                            continue
-                        
-                        # Only count subjects that have credits (ignore 0-credit mandatory courses)
-                        if credits > 0:
-                            if code not in best_subjects or points > best_subjects[code]["points"]:
-                                best_subjects[code] = {"credits": credits, "points": points}
-                
-                # Only include passed subjects (points > 0) in the CGPA denominator
-                passed_subjects = [sub for sub in best_subjects.values() if sub["points"] > 0]
-                
-                total_credits = sum(sub["credits"] for sub in passed_subjects)
-                total_points = sum(sub["credits"] * sub["points"] for sub in passed_subjects)
-                
-                if total_credits > 0:
-                    overall_cgpa = str(round(total_points / total_credits, 2))
-            except Exception as e:
-                print("Error calculating true CGPA:", e)
-                
             return {"semesters": results_data, "overall_cgpa": overall_cgpa}
     except SessionExpiredError: raise
     except Exception as e: pass
