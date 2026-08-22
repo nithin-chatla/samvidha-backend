@@ -1810,13 +1810,23 @@ def api_timetable():
 @app.route("/qp_init", methods=["GET"])
 def api_qp_init():
     token = require_token()
-    return jsonify(scrape_qp_init(SESSIONS[token]))
+    try:
+        return jsonify(scrape_qp_init(SESSIONS[token]))
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            return jsonify(scrape_qp_init(g.session))
+        raise
 
 @app.route("/qp_data", methods=["POST"])
 def api_qp_data():
     token = require_token()
     data = request.get_json() or {}
-    return jsonify(scrape_qp_data(SESSIONS[token], data.get("select_name", "exam_code"), data.get("exam_code")))
+    try:
+        return jsonify(scrape_qp_data(SESSIONS[token], data.get("select_name", "exam_code"), data.get("exam_code")))
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            return jsonify(scrape_qp_data(g.session, data.get("select_name", "exam_code"), data.get("exam_code")))
+        raise
 
 @app.route("/faculty", methods=["GET"])
 def api_faculty():
@@ -1832,13 +1842,23 @@ def api_faculty():
 def api_aat_list():
     token = require_token()
     data = request.get_json() or {}
-    return jsonify(scrape_aat_list(SESSIONS[token], data.get("type")))
+    try:
+        return jsonify(scrape_aat_list(SESSIONS[token], data.get("type")))
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            return jsonify(scrape_aat_list(g.session, data.get("type")))
+        raise
 
 @app.route("/aat_questions", methods=["POST"])
 def api_aat_questions():
     token = require_token()
     data = request.get_json() or {}
-    return jsonify(scrape_aat_questions(SESSIONS[token], data.get("type"), data.get("subject_data")))
+    try:
+        return jsonify(scrape_aat_questions(SESSIONS[token], data.get("type"), data.get("subject_data")))
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            return jsonify(scrape_aat_questions(g.session, data.get("type"), data.get("subject_data")))
+        raise
 
 @app.route("/aat_upload", methods=["POST"])
 def api_aat_upload():
@@ -1903,17 +1923,32 @@ def api_aat_delete():
 @app.route("/api/profile_details", methods=["POST"])
 def api_profile_details():
     token = require_token()
-    return jsonify(scrape_profile_details(SESSIONS[token]))
+    try:
+        return jsonify(scrape_profile_details(SESSIONS[token]))
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            return jsonify(scrape_profile_details(g.session))
+        raise
 
 @app.route("/api/fee_payment", methods=["POST"])
 def api_fee_payment():
     token = require_token()
-    return jsonify(scrape_fee_payment(SESSIONS[token]))
+    try:
+        return jsonify(scrape_fee_payment(SESSIONS[token]))
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            return jsonify(scrape_fee_payment(g.session))
+        raise
 
 @app.route("/api/fee_status", methods=["POST"])
 def api_fee_status():
     token = require_token()
-    return jsonify(scrape_fee_status(SESSIONS[token]))
+    try:
+        return jsonify(scrape_fee_status(SESSIONS[token]))
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            return jsonify(scrape_fee_status(g.session))
+        raise
 
 @app.route("/all", methods=["GET"])
 def api_all():
@@ -1941,12 +1976,27 @@ def api_all():
             "results": results_info,
             "timetable_init": f_tt.result()
         })
-    except SessionExpiredError: abort(401)
+    except SessionExpiredError:
+        if _relogin_and_refresh_session():
+            try:
+                f_att = scraping_executor.submit(scrape_attendance, g.session)
+                f_bio = scraping_executor.submit(scrape_biometric, g.session)
+                f_mid = scraping_executor.submit(scrape_midmarks, g.session)
+                f_pro = scraping_executor.submit(scrape_profile, g.session, g.username)
+                f_res = scraping_executor.submit(scrape_results, g.session)
+                f_mem = scraping_executor.submit(scrape_memos, g.session, g.username)
+                f_tt  = scraping_executor.submit(scrape_timetable, g.session, None, None)
+                results_info = f_res.result()
+                results_info["memos"] = f_mem.result()
+                return jsonify({"ok": True, "attendance": f_att.result(), "biometric": f_bio.result(), "midmarks": f_mid.result(), "profile": f_pro.result(), "results": results_info, "timetable_init": f_tt.result()})
+            except SessionExpiredError:
+                raise
+        raise
 
 @app.route("/lab_init", methods=["GET"])
 def api_lab_init():
     token = require_token()
-    session = SESSIONS[token]
+    session = g.session
     try:
         r = session.get(BASE + "/home?action=labrecord_std", timeout=15)
         check_auth(r)
@@ -1974,7 +2024,7 @@ def api_lab_init():
 @app.route("/lab_subject_data", methods=["POST"])
 def api_lab_subject_data():
     token = require_token()
-    session = SESSIONS[token]
+    session = g.session
     data = request.get_json() or {}
     sub_code = data.get("sub_code")
     ud = data.get("user_details", {})
@@ -2025,7 +2075,7 @@ def api_lab_subject_data():
 @app.route("/lab_upload", methods=["POST"])
 def api_lab_upload():
     token = require_token()
-    session = SESSIONS[token]
+    session = g.session
     ajax_url = BASE + "/pages/student/lab_records/ajax/day2day"
     upload_payload = {'action': (None, 'upload_lab_record_student')}
     for k, v in request.form.items(): upload_payload[k] = (None, v)
@@ -2050,7 +2100,7 @@ def api_lab_upload():
 @app.route("/lab_delete", methods=["POST"])
 def api_lab_delete():
     token = require_token()
-    session = SESSIONS[token]
+    session = g.session
     data = request.get_json() or {}
     try:
         res = session.post(BASE + "/pages/student/lab_records/ajax/day2day", data={'rollno': data.get('rollno'), 'ay': data.get('ay'), 'sub_code': data.get('sub_code'), 'week_no': data.get('week_no'), 'sem': data.get('current_sem'), 'action': 'day2day_lab_delete'}, headers={'x-requested-with': 'XMLHttpRequest'}, timeout=15)
