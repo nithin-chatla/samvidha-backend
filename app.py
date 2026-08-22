@@ -292,7 +292,7 @@ def login_session(username, password):
 
 def scrape_attendance(session):
     try:
-        r = session.get(BASE + "/home?action=stud_att_STD", timeout=15)
+        r = session.get(BASE + "/home?action=stud_att_STD", timeout=18)
         check_auth(r)
         
         soup = BeautifulSoup(r.text, "lxml")
@@ -324,7 +324,7 @@ def scrape_attendance(session):
     except SessionExpiredError:
         raise
     except Exception:
-        return {"records": [], "last_date": ""}
+        return None
 
 
 def scrape_course_content(session):
@@ -486,7 +486,7 @@ def scrape_biometric(session):
 
 def scrape_midmarks(session):
     try:
-        r = session.get(BASE + "/home?action=cie_marks_ug", timeout=15)
+        r = session.get(BASE + "/home?action=cie_marks_ug", timeout=18)
         check_auth(r)
         
         soup = BeautifulSoup(r.text, "lxml")
@@ -534,11 +534,11 @@ def scrape_midmarks(session):
     except SessionExpiredError:
         raise
     except Exception:
-        return {"theory": [], "laboratory": []}
+        return None
 
 def scrape_results(session):
     try:
-        r = session.get(BASE + "/home?action=credit_register", timeout=15)
+        r = session.get(BASE + "/home?action=credit_register", timeout=18)
         check_auth(r)
         
         if r.status_code == 200 and "SEMESTER" in r.text.upper():
@@ -584,7 +584,7 @@ def scrape_results(session):
             return {"semesters": results_data, "overall_cgpa": overall_cgpa}
     except SessionExpiredError: raise
     except Exception as e: pass
-    return {"semesters": [], "overall_cgpa": "N/A"}
+    return None
 
 def scrape_memos(session, username):
     try:
@@ -1226,7 +1226,7 @@ def scrape_profile(session, username):
 
 def scrape_timetable(session, ay=None, section=None):
     try:
-        r = session.get(BASE + "/home?action=TT_std", timeout=15)
+        r = session.get(BASE + "/home?action=TT_std", timeout=18)
         check_auth(r)
         soup = BeautifulSoup(r.text, "lxml")
         
@@ -1334,7 +1334,7 @@ def scrape_timetable(session, ay=None, section=None):
                         
         return {"ok": True, "ays": ays, "sections": sections, "schedule": schedule, "subjects": subjects}
     except Exception as e:
-        return {"ok": False, "error": str(e), "ays": [], "sections": [], "schedule": [], "subjects": []}
+        return None
 
 def scrape_qp_init(session):
     actions = ["qp_scheme", "qp_and_solution", "qp_and_solutions", "question_paper"]
@@ -1795,10 +1795,16 @@ def api_results():
 def api_marks():
     token = require_token()
     try:
-        return jsonify({"midmarks": scrape_midmarks(SESSIONS[token])})
+        data = scrape_midmarks(SESSIONS[token])
+        if data is None:
+            return jsonify({"ok": False, "error": "Timeout"}), 500
+        return jsonify({"midmarks": data})
     except SessionExpiredError:
         if _relogin_and_refresh_session():
-            return jsonify({"midmarks": scrape_midmarks(g.session)})
+            data = scrape_midmarks(g.session)
+            if data is None:
+                return jsonify({"ok": False, "error": "Timeout"}), 500
+            return jsonify({"midmarks": data})
         raise
 
 @app.route("/timetable", methods=["POST"])
@@ -1806,10 +1812,16 @@ def api_timetable():
     token = require_token()
     data = request.get_json() or {}
     try:
-        return jsonify(scrape_timetable(SESSIONS[token], data.get("ay"), data.get("section")))
+        tt_data = scrape_timetable(SESSIONS[token], data.get("ay"), data.get("section"))
+        if tt_data is None:
+            return jsonify({"ok": False, "error": "Timeout"}), 500
+        return jsonify(tt_data)
     except SessionExpiredError:
         if _relogin_and_refresh_session():
-            return jsonify(scrape_timetable(g.session, data.get("ay"), data.get("section")))
+            tt_data = scrape_timetable(g.session, data.get("ay"), data.get("section"))
+            if tt_data is None:
+                return jsonify({"ok": False, "error": "Timeout"}), 500
+            return jsonify(tt_data)
         raise
 
 @app.route("/qp_init", methods=["GET"])
@@ -1969,17 +1981,19 @@ def api_all():
         f_mem = scraping_executor.submit(scrape_memos, session, username)
         f_tt  = scraping_executor.submit(scrape_timetable, session, None, None)
         
-        results_info = f_res.result()
-        results_info["memos"] = f_mem.result()
+        results_info = f_res.result() or {"semesters": [], "overall_cgpa": "N/A"}
+        memos_info = f_mem.result()
+        if memos_info:
+            results_info["memos"] = memos_info
         
         return jsonify({
             "ok": True, 
-            "attendance": f_att.result(), 
-            "biometric": f_bio.result(), 
-            "midmarks": f_mid.result(), 
-            "profile": f_pro.result(), 
+            "attendance": f_att.result() or {"records": [], "last_date": ""}, 
+            "biometric": f_bio.result() or [], 
+            "midmarks": f_mid.result() or {"theory": [], "laboratory": []}, 
+            "profile": f_pro.result() or {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}, 
             "results": results_info,
-            "timetable_init": f_tt.result()
+            "timetable_init": f_tt.result() or {"ays": [], "sections": [], "schedule": [], "subjects": []}
         })
     except SessionExpiredError:
         if _relogin_and_refresh_session():
@@ -1991,9 +2005,20 @@ def api_all():
                 f_res = scraping_executor.submit(scrape_results, g.session)
                 f_mem = scraping_executor.submit(scrape_memos, g.session, g.username)
                 f_tt  = scraping_executor.submit(scrape_timetable, g.session, None, None)
-                results_info = f_res.result()
-                results_info["memos"] = f_mem.result()
-                return jsonify({"ok": True, "attendance": f_att.result(), "biometric": f_bio.result(), "midmarks": f_mid.result(), "profile": f_pro.result(), "results": results_info, "timetable_init": f_tt.result()})
+            results_info = f_res.result() or {"semesters": [], "overall_cgpa": "N/A"}
+            memos_info = f_mem.result()
+            if memos_info:
+                results_info["memos"] = memos_info
+                
+            return jsonify({
+                "ok": True, 
+                "attendance": f_att.result() or {"records": [], "last_date": ""}, 
+                "biometric": f_bio.result() or [], 
+                "midmarks": f_mid.result() or {"theory": [], "laboratory": []}, 
+                "profile": f_pro.result() or {"Header": {"Roll Number": g.username.upper()}, "Sections": {}, "Documents": {}}, 
+                "results": results_info, 
+                "timetable_init": f_tt.result() or {"ays": [], "sections": [], "schedule": [], "subjects": []}
+            })
             except SessionExpiredError:
                 raise
         raise
