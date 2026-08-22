@@ -324,7 +324,7 @@ def scrape_attendance(session):
     except SessionExpiredError:
         raise
     except Exception:
-        return {"records": [], "last_date": ""}
+        raise
 
 
 def scrape_course_content(session):
@@ -452,7 +452,7 @@ def scrape_course_content(session):
     except SessionExpiredError:
         raise
     except Exception:
-        return {"records": []}
+        raise
 
 
 def scrape_biometric(session):
@@ -482,7 +482,7 @@ def scrape_biometric(session):
     except SessionExpiredError:
         raise
     except Exception as e:
-        return []
+        raise
 
 def scrape_midmarks(session):
     try:
@@ -534,7 +534,7 @@ def scrape_midmarks(session):
     except SessionExpiredError:
         raise
     except Exception:
-        return {"theory": [], "laboratory": []}
+        raise
 
 def scrape_results(session):
     try:
@@ -609,8 +609,8 @@ def scrape_results(session):
                 
             return {"semesters": results_data, "overall_cgpa": overall_cgpa}
     except SessionExpiredError: raise
-    except Exception as e: pass
-    return {"semesters": [], "overall_cgpa": "N/A"}
+    except Exception as e:
+        raise
 
 def scrape_memos(session, username):
     try:
