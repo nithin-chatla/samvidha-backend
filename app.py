@@ -596,8 +596,11 @@ def scrape_results(session):
                             if code not in best_subjects or points > best_subjects[code]["points"]:
                                 best_subjects[code] = {"credits": credits, "points": points}
                 
-                total_credits = sum(sub["credits"] for sub in best_subjects.values())
-                total_points = sum(sub["credits"] * sub["points"] for sub in best_subjects.values())
+                # Only include passed subjects (points > 0) in the CGPA denominator
+                passed_subjects = [sub for sub in best_subjects.values() if sub["points"] > 0]
+                
+                total_credits = sum(sub["credits"] for sub in passed_subjects)
+                total_points = sum(sub["credits"] * sub["points"] for sub in passed_subjects)
                 
                 if total_credits > 0:
                     overall_cgpa = str(round(total_points / total_credits, 2))
