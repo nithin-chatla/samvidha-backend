@@ -563,7 +563,8 @@ def scrape_results(session):
                     match = re.search(r'CGPA[^\d]*([\d\.]+)', text)
                     if match: 
                         current_sem_data["cgpa"] = match.group(1)
-                        overall_cgpa = match.group(1) 
+                        if overall_cgpa == "N/A":
+                            overall_cgpa = match.group(1) 
                     continue
                 cols = row.find_all(['td', 'th'])
                 if len(cols) >= 8 and cols[0].get_text(strip=True).isdigit():
