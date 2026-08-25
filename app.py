@@ -2598,21 +2598,23 @@ def notify_messenger():
         collapse_key_val = f"dm_{sender}"
         
         push_msg = messaging.Message(
-            notification=messaging.Notification(
-                title=title,
-                body=message,
-            ),
+            data={
+                "title": title,
+                "body": message,
+                "route": "/messenger_chat",
+                "sender": sender
+            },
             android=messaging.AndroidConfig(
+                priority="high",
                 collapse_key=collapse_key_val
             ),
             apns=messaging.APNSConfig(
-                headers={"apns-collapse-id": collapse_key_val}
+                headers={
+                    "apns-collapse-id": collapse_key_val,
+                    "apns-priority": "10"
+                }
             ),
-            topic=topic,
-            data={
-                "route": "/messenger_chat",
-                "sender": sender
-            }
+            topic=topic
         )
         
         response = messaging.send(push_msg)
