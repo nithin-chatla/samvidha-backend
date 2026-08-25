@@ -1750,43 +1750,77 @@ def api_logout():
 def api_profile():
     token = require_token()
     try:
-        return jsonify({"profile": scrape_profile(SESSIONS[token], TOKENS[token]["username"])})
+        profile_data = scrape_profile(SESSIONS[token], TOKENS[token]["username"])
+        if profile_data is None:
+            return jsonify({"ok": False, "error": "Timeout"}), 500
+        return jsonify({"profile": profile_data})
     except SessionExpiredError:
         if _relogin_and_refresh_session():
-            return jsonify({"profile": scrape_profile(g.session, g.username)})
+            profile_data = scrape_profile(g.session, g.username)
+            if profile_data is None:
+                return jsonify({"ok": False, "error": "Timeout"}), 500
+            return jsonify({"profile": profile_data})
         raise
 
 @app.route("/attendance", methods=["GET"])
 def api_attendance():
     token = require_token()
     try:
-        return jsonify({"attendance": scrape_attendance(SESSIONS[token]), "biometric": scrape_biometric(SESSIONS[token])})
+        att = scrape_attendance(SESSIONS[token])
+        bio = scrape_biometric(SESSIONS[token])
+        if att is None:
+            return jsonify({"ok": False, "error": "Timeout"}), 500
+        return jsonify({"attendance": att, "biometric": bio})
     except SessionExpiredError:
         if _relogin_and_refresh_session():
-            return jsonify({"attendance": scrape_attendance(g.session), "biometric": scrape_biometric(g.session)})
+            att = scrape_attendance(g.session)
+            bio = scrape_biometric(g.session)
+            if att is None:
+                return jsonify({"ok": False, "error": "Timeout"}), 500
+            return jsonify({"attendance": att, "biometric": bio})
         raise
 
 @app.route("/course_delivery", methods=["GET"])
 def api_course_delivery():
     token = require_token()
     try:
-        return jsonify({"course_content": scrape_course_content(SESSIONS[token])})
+        data = scrape_course_content(SESSIONS[token])
+        if data is None:
+            return jsonify({"ok": False, "error": "Timeout"}), 500
+        return jsonify({"course_content": data})
     except SessionExpiredError:
         if _relogin_and_refresh_session():
-            return jsonify({"course_content": scrape_course_content(g.session)})
+            data = scrape_course_content(g.session)
+            if data is None:
+                return jsonify({"ok": False, "error": "Timeout"}), 500
+            return jsonify({"course_content": data})
         raise
 
 @app.route("/results", methods=["GET"])
 def api_results():
     token = require_token()
     try:
-        results_info = scrape_results(SESSIONS[token])
-        results_info["memos"] = scrape_memos(SESSIONS[token], TOKENS[token]["username"])
+        f_res = scraping_executor.submit(scrape_results, SESSIONS[token])
+        f_mem = scraping_executor.submit(scrape_memos, SESSIONS[token], TOKENS[token]["username"])
+        results_info = f_res.result()
+        if results_info is None:
+            return jsonify({"ok": False, "error": "Timeout"}), 500
+        
+        memos_info = f_mem.result()
+        if memos_info:
+            results_info["memos"] = memos_info
         return jsonify({"results": results_info})
     except SessionExpiredError:
         if _relogin_and_refresh_session():
-            results_info = scrape_results(g.session)
-            results_info["memos"] = scrape_memos(g.session, g.username)
+            f_res = scraping_executor.submit(scrape_results, g.session)
+            f_mem = scraping_executor.submit(scrape_memos, g.session, g.username)
+            results_info = f_res.result()
+            if results_info is None:
+                return jsonify({"ok": False, "error": "Timeout"}), 500
+            
+            memos_info = f_mem.result()
+            if memos_info:
+                results_info["memos"] = memos_info
             return jsonify({"results": results_info})
         raise
 
