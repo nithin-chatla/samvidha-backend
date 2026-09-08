@@ -161,7 +161,7 @@ async def run_async_scraper():
     if all_faculty:
         existing_faculty = []
         try:
-            with open("faculty_data.json", "r", encoding="utf-8") as f:
+            with open(os.path.join(os.path.dirname(__file__), "faculty_data.json"), "r", encoding="utf-8") as f:
                 existing_faculty = json.load(f)
         except:
             pass
@@ -190,7 +190,7 @@ async def run_async_scraper():
             if key not in existing_dict:
                 final_faculty.append(new_f)
 
-        with open("faculty_data.json", "w", encoding="utf-8") as f:
+        with open(os.path.join(os.path.dirname(__file__), "faculty_data.json"), "w", encoding="utf-8") as f:
             json.dump(final_faculty, f, indent=4, ensure_ascii=False)
         print(f"[BACKGROUND SCRAPER] Successfully updated faculty_data.json with {len(final_faculty)} profiles.")
         
@@ -1749,7 +1749,7 @@ def api_qp_data():
 def api_faculty():
     token = require_token()
     try:
-        with open("faculty_data.json", "r", encoding="utf-8") as f:
+        with open(os.path.join(os.path.dirname(__file__), "faculty_data.json"), "r", encoding="utf-8") as f:
             data = json.load(f)
         return jsonify({"ok": True, "faculty": data})
     except Exception as e:
