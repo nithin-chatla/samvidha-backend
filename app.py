@@ -226,7 +226,7 @@ class SessionExpiredError(Exception): pass
 
 @app.errorhandler(SessionExpiredError)
 def handle_session_expired(e):
-    return jsonify({"ok": False, "error": "session_expired"}), 503
+    return jsonify({"ok": False, "error": "session_expired"}), 401
 
 def check_auth(r):
     url = r.url.lower()
@@ -292,7 +292,7 @@ def login_session(username, password):
 
 def scrape_attendance(session):
     try:
-        r = session.get(BASE + "/home?action=stud_att_STD", timeout=18)
+        r = session.get(BASE + "/home?action=stud_att_STD", timeout=15)
         check_auth(r)
         
         soup = BeautifulSoup(r.text, "lxml")
@@ -324,7 +324,7 @@ def scrape_attendance(session):
     except SessionExpiredError:
         raise
     except Exception:
-        return None
+        return {"records": [], "last_date": ""}
 
 
 def scrape_course_content(session):
@@ -486,7 +486,7 @@ def scrape_biometric(session):
 
 def scrape_midmarks(session):
     try:
-        r = session.get(BASE + "/home?action=cie_marks_ug", timeout=18)
+        r = session.get(BASE + "/home?action=cie_marks_ug", timeout=15)
         check_auth(r)
         
         soup = BeautifulSoup(r.text, "lxml")
@@ -534,11 +534,11 @@ def scrape_midmarks(session):
     except SessionExpiredError:
         raise
     except Exception:
-        return None
+        return {"theory": [], "laboratory": []}
 
 def scrape_results(session):
     try:
-        r = session.get(BASE + "/home?action=credit_register", timeout=18)
+        r = session.get(BASE + "/home?action=credit_register", timeout=15)
         check_auth(r)
         
         if r.status_code == 200 and "SEMESTER" in r.text.upper():
@@ -554,21 +554,17 @@ def scrape_results(session):
                     if current_sem_data: results_data.append(current_sem_data)
                     current_sem_data = {"semester": text.strip(), "subjects": [], "sgpa": "N/A", "cgpa": "N/A"}
                     continue
-                
-                if "CUMULATIVE GRADE POINT AVERAGE" in text:
-                    match = re.search(r'CGPA[^\d]*([\d\.]+)', text)
-                    if match: 
-                        if current_sem_data:
-                            current_sem_data["cgpa"] = match.group(1)
-                        overall_cgpa = match.group(1) 
-                    continue
-                
                 if not current_sem_data: continue
                 if "SEMESTER GRADE POINT AVERAGE" in text:
                     match = re.search(r'SGPA[^\d]*([\d\.]+)', text)
                     if match: current_sem_data["sgpa"] = match.group(1)
                     continue
-                
+                if "CUMULATIVE GRADE POINT AVERAGE" in text:
+                    match = re.search(r'CGPA[^\d]*([\d\.]+)', text)
+                    if match: 
+                        current_sem_data["cgpa"] = match.group(1)
+                        overall_cgpa = match.group(1) 
+                    continue
                 cols = row.find_all(['td', 'th'])
                 if len(cols) >= 8 and cols[0].get_text(strip=True).isdigit():
                     grade = cols[3].get_text(strip=True)
@@ -583,7 +579,7 @@ def scrape_results(session):
             return {"semesters": results_data, "overall_cgpa": overall_cgpa}
     except SessionExpiredError: raise
     except Exception as e: pass
-    return None
+    return {"semesters": [], "overall_cgpa": "N/A"}
 
 def scrape_memos(session, username):
     try:
@@ -1225,7 +1221,7 @@ def scrape_profile(session, username):
 
 def scrape_timetable(session, ay=None, section=None):
     try:
-        r = session.get(BASE + "/home?action=TT_std", timeout=18)
+        r = session.get(BASE + "/home?action=TT_std", timeout=15)
         check_auth(r)
         soup = BeautifulSoup(r.text, "lxml")
         
@@ -1333,7 +1329,7 @@ def scrape_timetable(session, ay=None, section=None):
                         
         return {"ok": True, "ays": ays, "sections": sections, "schedule": schedule, "subjects": subjects}
     except Exception as e:
-        return None
+        return {"ok": False, "error": str(e), "ays": [], "sections": [], "schedule": [], "subjects": []}
 
 def scrape_qp_init(session):
     actions = ["qp_scheme", "qp_and_solution", "qp_and_solutions", "question_paper"]
@@ -1648,74 +1644,27 @@ def rasterize_and_compress_pdf(file_bytes):
     images[0].save(output_io, format="PDF", resolution=100.0, save_all=True, append_images=images[1:], quality=50, optimize=True)
     return output_io.getvalue()
 
-def safe_b64decode(s):
-    s = s.replace('-', '+').replace('_', '/')
-    s += '=' * (-len(s) % 4)
-    return base64.b64decode(s)
-
-def _build_session_from_token(token_data):
-    """Build a requests.Session from decoded token data."""
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    })
-    if token_data.get("x"):
-        session.headers.update({"X-CSRF-TOKEN": token_data["x"]})
-    session.cookies.update(token_data.get("c", {}))
-    return session
-
-def _make_new_token(username, session, password=""):
-    """Create a fresh stateless token from a live session."""
-    token_data = {
-        "u": username,
-        "c": session.cookies.get_dict(),
-        "x": session.headers.get("X-CSRF-TOKEN", ""),
-        "p": password
-    }
-    return base64.urlsafe_b64encode(json.dumps(token_data).encode()).decode()
-
 def require_token():
     h = request.headers.get("Authorization", "")
     if not h.startswith("Bearer "): abort(401)
     token_str = h.split(" ")[1]
     
     try:
-        token_data = json.loads(safe_b64decode(token_str).decode())
-        session = _build_session_from_token(token_data)
+        token_data = json.loads(base64.urlsafe_b64decode(token_str).decode())
+        
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        })
+        if token_data.get("x"):
+            session.headers.update({"X-CSRF-TOKEN": token_data["x"]})
+        session.cookies.update(token_data.get("c", {}))
         
         g.session = session
         g.username = token_data.get("u", "")
-        g.password = token_data.get("p", "")
-        g.token_refreshed = False
         return token_str
     except Exception:
         abort(401)
-
-def _relogin_and_refresh_session():
-    """Re-login to college using embedded password and refresh g.session.
-    Returns True if re-login succeeded, False otherwise."""
-    username = getattr(g, 'username', '')
-    password = getattr(g, 'password', '')
-    if not username or not password:
-        return False
-    try:
-        new_session, err = login_session(username, password)
-        if new_session:
-            g.session = new_session
-            g.token_refreshed = True
-            # Update the proxy so SESSIONS[token] also returns the new session
-            return True
-    except Exception as e:
-        print(f"Auto-relogin failed for {username}: {e}")
-    return False
-
-@app.after_request
-def attach_new_token(response):
-    """If we re-logged in during this request, send new token to client."""
-    if getattr(g, 'token_refreshed', False):
-        new_token = _make_new_token(g.username, g.session, g.password)
-        response.headers['X-New-Token'] = new_token
-    return response
 
 @app.route("/check_update", methods=["GET"])
 def check_update():
@@ -1733,9 +1682,15 @@ def api_login():
     session, err = login_session(username, password)
     if not session: return jsonify({"ok": False, "error": err}), 401
     
-    # Create a completely stateless token that contains the session data + password for auto-relogin
+    # Create a completely stateless token that contains the session data
+    token_data = {
+        "u": username,
+        "c": session.cookies.get_dict(),
+        "x": session.headers.get("X-CSRF-TOKEN", "")
+    }
+    
     try:
-        token = _make_new_token(username, session, password)
+        token = base64.urlsafe_b64encode(json.dumps(token_data).encode()).decode()
         return jsonify({"ok": True, "token": token})
     except Exception as e:
         return jsonify({"ok": False, "error": f"token_generation_failed: {str(e)}"}), 500
@@ -1749,134 +1704,46 @@ def api_logout():
 @app.route("/profile", methods=["GET"])
 def api_profile():
     token = require_token()
-    try:
-        profile_data = scrape_profile(SESSIONS[token], TOKENS[token]["username"])
-        if profile_data is None:
-            return jsonify({"ok": False, "error": "Timeout"}), 500
-        return jsonify({"profile": profile_data})
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            profile_data = scrape_profile(g.session, g.username)
-            if profile_data is None:
-                return jsonify({"ok": False, "error": "Timeout"}), 500
-            return jsonify({"profile": profile_data})
-        raise
+    return jsonify({"profile": scrape_profile(SESSIONS[token], TOKENS[token]["username"])})
 
 @app.route("/attendance", methods=["GET"])
 def api_attendance():
     token = require_token()
-    try:
-        att = scrape_attendance(SESSIONS[token])
-        bio = scrape_biometric(SESSIONS[token])
-        if att is None:
-            return jsonify({"ok": False, "error": "Timeout"}), 500
-        return jsonify({"attendance": att, "biometric": bio})
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            att = scrape_attendance(g.session)
-            bio = scrape_biometric(g.session)
-            if att is None:
-                return jsonify({"ok": False, "error": "Timeout"}), 500
-            return jsonify({"attendance": att, "biometric": bio})
-        raise
+    return jsonify({"attendance": scrape_attendance(SESSIONS[token]), "biometric": scrape_biometric(SESSIONS[token])})
 
 @app.route("/course_delivery", methods=["GET"])
 def api_course_delivery():
     token = require_token()
-    try:
-        data = scrape_course_content(SESSIONS[token])
-        if data is None:
-            return jsonify({"ok": False, "error": "Timeout"}), 500
-        return jsonify({"course_content": data})
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            data = scrape_course_content(g.session)
-            if data is None:
-                return jsonify({"ok": False, "error": "Timeout"}), 500
-            return jsonify({"course_content": data})
-        raise
+    return jsonify({"course_content": scrape_course_content(SESSIONS[token])})
 
 @app.route("/results", methods=["GET"])
 def api_results():
     token = require_token()
-    try:
-        f_res = scraping_executor.submit(scrape_results, SESSIONS[token])
-        f_mem = scraping_executor.submit(scrape_memos, SESSIONS[token], TOKENS[token]["username"])
-        results_info = f_res.result()
-        if results_info is None:
-            return jsonify({"ok": False, "error": "Timeout"}), 500
-        
-        memos_info = f_mem.result()
-        if memos_info:
-            results_info["memos"] = memos_info
-        return jsonify({"results": results_info})
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            f_res = scraping_executor.submit(scrape_results, g.session)
-            f_mem = scraping_executor.submit(scrape_memos, g.session, g.username)
-            results_info = f_res.result()
-            if results_info is None:
-                return jsonify({"ok": False, "error": "Timeout"}), 500
-            
-            memos_info = f_mem.result()
-            if memos_info:
-                results_info["memos"] = memos_info
-            return jsonify({"results": results_info})
-        raise
+    results_info = scrape_results(SESSIONS[token])
+    results_info["memos"] = scrape_memos(SESSIONS[token], TOKENS[token]["username"])
+    return jsonify({"results": results_info})
 
 @app.route("/marks", methods=["GET"])
 def api_marks():
     token = require_token()
-    try:
-        data = scrape_midmarks(SESSIONS[token])
-        if data is None:
-            return jsonify({"ok": False, "error": "Timeout"}), 500
-        return jsonify({"midmarks": data})
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            data = scrape_midmarks(g.session)
-            if data is None:
-                return jsonify({"ok": False, "error": "Timeout"}), 500
-            return jsonify({"midmarks": data})
-        raise
+    return jsonify({"midmarks": scrape_midmarks(SESSIONS[token])})
 
 @app.route("/timetable", methods=["POST"])
 def api_timetable():
     token = require_token()
     data = request.get_json() or {}
-    try:
-        tt_data = scrape_timetable(SESSIONS[token], data.get("ay"), data.get("section"))
-        if tt_data is None:
-            return jsonify({"ok": False, "error": "Timeout"}), 500
-        return jsonify(tt_data)
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            tt_data = scrape_timetable(g.session, data.get("ay"), data.get("section"))
-            if tt_data is None:
-                return jsonify({"ok": False, "error": "Timeout"}), 500
-            return jsonify(tt_data)
-        raise
+    return jsonify(scrape_timetable(SESSIONS[token], data.get("ay"), data.get("section")))
 
 @app.route("/qp_init", methods=["GET"])
 def api_qp_init():
     token = require_token()
-    try:
-        return jsonify(scrape_qp_init(SESSIONS[token]))
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            return jsonify(scrape_qp_init(g.session))
-        raise
+    return jsonify(scrape_qp_init(SESSIONS[token]))
 
 @app.route("/qp_data", methods=["POST"])
 def api_qp_data():
     token = require_token()
     data = request.get_json() or {}
-    try:
-        return jsonify(scrape_qp_data(SESSIONS[token], data.get("select_name", "exam_code"), data.get("exam_code")))
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            return jsonify(scrape_qp_data(g.session, data.get("select_name", "exam_code"), data.get("exam_code")))
-        raise
+    return jsonify(scrape_qp_data(SESSIONS[token], data.get("select_name", "exam_code"), data.get("exam_code")))
 
 @app.route("/faculty", methods=["GET"])
 def api_faculty():
@@ -1892,23 +1759,13 @@ def api_faculty():
 def api_aat_list():
     token = require_token()
     data = request.get_json() or {}
-    try:
-        return jsonify(scrape_aat_list(SESSIONS[token], data.get("type")))
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            return jsonify(scrape_aat_list(g.session, data.get("type")))
-        raise
+    return jsonify(scrape_aat_list(SESSIONS[token], data.get("type")))
 
 @app.route("/aat_questions", methods=["POST"])
 def api_aat_questions():
     token = require_token()
     data = request.get_json() or {}
-    try:
-        return jsonify(scrape_aat_questions(SESSIONS[token], data.get("type"), data.get("subject_data")))
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            return jsonify(scrape_aat_questions(g.session, data.get("type"), data.get("subject_data")))
-        raise
+    return jsonify(scrape_aat_questions(SESSIONS[token], data.get("type"), data.get("subject_data")))
 
 @app.route("/aat_upload", methods=["POST"])
 def api_aat_upload():
@@ -1973,32 +1830,17 @@ def api_aat_delete():
 @app.route("/api/profile_details", methods=["POST"])
 def api_profile_details():
     token = require_token()
-    try:
-        return jsonify(scrape_profile_details(SESSIONS[token]))
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            return jsonify(scrape_profile_details(g.session))
-        raise
+    return jsonify(scrape_profile_details(SESSIONS[token]))
 
 @app.route("/api/fee_payment", methods=["POST"])
 def api_fee_payment():
     token = require_token()
-    try:
-        return jsonify(scrape_fee_payment(SESSIONS[token]))
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            return jsonify(scrape_fee_payment(g.session))
-        raise
+    return jsonify(scrape_fee_payment(SESSIONS[token]))
 
 @app.route("/api/fee_status", methods=["POST"])
 def api_fee_status():
     token = require_token()
-    try:
-        return jsonify(scrape_fee_status(SESSIONS[token]))
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            return jsonify(scrape_fee_status(g.session))
-        raise
+    return jsonify(scrape_fee_status(SESSIONS[token]))
 
 @app.route("/all", methods=["GET"])
 def api_all():
@@ -2014,52 +1856,24 @@ def api_all():
         f_mem = scraping_executor.submit(scrape_memos, session, username)
         f_tt  = scraping_executor.submit(scrape_timetable, session, None, None)
         
-        results_info = f_res.result() or {"semesters": [], "overall_cgpa": "N/A"}
-        memos_info = f_mem.result()
-        if memos_info:
-            results_info["memos"] = memos_info
+        results_info = f_res.result()
+        results_info["memos"] = f_mem.result()
         
         return jsonify({
             "ok": True, 
-            "attendance": f_att.result() or {"records": [], "last_date": ""}, 
-            "biometric": f_bio.result() or [], 
-            "midmarks": f_mid.result() or {"theory": [], "laboratory": []}, 
-            "profile": f_pro.result() or {"Header": {"Roll Number": username.upper()}, "Sections": {}, "Documents": {}}, 
+            "attendance": f_att.result(), 
+            "biometric": f_bio.result(), 
+            "midmarks": f_mid.result(), 
+            "profile": f_pro.result(), 
             "results": results_info,
-            "timetable_init": f_tt.result() or {"ays": [], "sections": [], "schedule": [], "subjects": []}
+            "timetable_init": f_tt.result()
         })
-    except SessionExpiredError:
-        if _relogin_and_refresh_session():
-            try:
-                f_att = scraping_executor.submit(scrape_attendance, g.session)
-                f_bio = scraping_executor.submit(scrape_biometric, g.session)
-                f_mid = scraping_executor.submit(scrape_midmarks, g.session)
-                f_pro = scraping_executor.submit(scrape_profile, g.session, g.username)
-                f_res = scraping_executor.submit(scrape_results, g.session)
-                f_mem = scraping_executor.submit(scrape_memos, g.session, g.username)
-                f_tt  = scraping_executor.submit(scrape_timetable, g.session, None, None)
-                results_info = f_res.result() or {"semesters": [], "overall_cgpa": "N/A"}
-                memos_info = f_mem.result()
-                if memos_info:
-                    results_info["memos"] = memos_info
-                    
-                return jsonify({
-                    "ok": True, 
-                    "attendance": f_att.result() or {"records": [], "last_date": ""}, 
-                    "biometric": f_bio.result() or [], 
-                    "midmarks": f_mid.result() or {"theory": [], "laboratory": []}, 
-                    "profile": f_pro.result() or {"Header": {"Roll Number": g.username.upper()}, "Sections": {}, "Documents": {}}, 
-                    "results": results_info, 
-                    "timetable_init": f_tt.result() or {"ays": [], "sections": [], "schedule": [], "subjects": []}
-                })
-            except SessionExpiredError:
-                raise
-        raise
+    except SessionExpiredError: abort(401)
 
 @app.route("/lab_init", methods=["GET"])
 def api_lab_init():
     token = require_token()
-    session = g.session
+    session = SESSIONS[token]
     try:
         r = session.get(BASE + "/home?action=labrecord_std", timeout=15)
         check_auth(r)
@@ -2087,7 +1901,7 @@ def api_lab_init():
 @app.route("/lab_subject_data", methods=["POST"])
 def api_lab_subject_data():
     token = require_token()
-    session = g.session
+    session = SESSIONS[token]
     data = request.get_json() or {}
     sub_code = data.get("sub_code")
     ud = data.get("user_details", {})
@@ -2138,7 +1952,7 @@ def api_lab_subject_data():
 @app.route("/lab_upload", methods=["POST"])
 def api_lab_upload():
     token = require_token()
-    session = g.session
+    session = SESSIONS[token]
     ajax_url = BASE + "/pages/student/lab_records/ajax/day2day"
     upload_payload = {'action': (None, 'upload_lab_record_student')}
     for k, v in request.form.items(): upload_payload[k] = (None, v)
@@ -2163,7 +1977,7 @@ def api_lab_upload():
 @app.route("/lab_delete", methods=["POST"])
 def api_lab_delete():
     token = require_token()
-    session = g.session
+    session = SESSIONS[token]
     data = request.get_json() or {}
     try:
         res = session.post(BASE + "/pages/student/lab_records/ajax/day2day", data={'rollno': data.get('rollno'), 'ay': data.get('ay'), 'sub_code': data.get('sub_code'), 'week_no': data.get('week_no'), 'sem': data.get('current_sem'), 'action': 'day2day_lab_delete'}, headers={'x-requested-with': 'XMLHttpRequest'}, timeout=15)
@@ -2598,23 +2412,21 @@ def notify_messenger():
         collapse_key_val = f"dm_{sender}"
         
         push_msg = messaging.Message(
-            data={
-                "title": title,
-                "body": message,
-                "route": "/messenger_chat",
-                "sender": sender
-            },
+            notification=messaging.Notification(
+                title=title,
+                body=message,
+            ),
             android=messaging.AndroidConfig(
-                priority="high",
                 collapse_key=collapse_key_val
             ),
             apns=messaging.APNSConfig(
-                headers={
-                    "apns-collapse-id": collapse_key_val,
-                    "apns-priority": "10"
-                }
+                headers={"apns-collapse-id": collapse_key_val}
             ),
-            topic=topic
+            topic=topic,
+            data={
+                "route": "/messenger_chat",
+                "sender": sender
+            }
         )
         
         response = messaging.send(push_msg)
