@@ -2343,9 +2343,11 @@ def notify_anon_chat():
             message = message[:57] + "..."
         
         push_msg = messaging.Message(
+            notification=messaging.Notification(
+                title=title,
+                body=message,
+            ),
             data={
-                "title": title,
-                "body": message,
                 "route": "/anonymous_chat"
             },
             android=messaging.AndroidConfig(
