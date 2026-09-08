@@ -2338,19 +2338,28 @@ def notify_anon_chat():
         title = "Anonymous Chat Active"
         
         # Keep sender in the message body
-        message = f"{sender}: {message}"
-        if len(message) > 60:
-            message = message[:57] + "..."
+        body_text = f"{sender}: {message}"
+        if len(body_text) > 60:
+            body_text = body_text[:57] + "..."
         
         push_msg = messaging.Message(
+            notification=messaging.Notification(
+                title=title,
+                body=body_text,
+            ),
             data={
                 "title": title,
-                "body": message,
+                "body": body_text,
                 "route": "/anonymous_chat"
             },
             android=messaging.AndroidConfig(
                 priority="high",
-                collapse_key="anon_chat"
+                collapse_key="anon_chat",
+                notification=messaging.AndroidNotification(
+                    channel_id="samvidha_alerts_high",
+                    tag="anon_chat",
+                    default_sound=True,
+                )
             ),
             topic=topic
         )
@@ -2360,6 +2369,7 @@ def notify_anon_chat():
     except Exception as e:
         print(f"FCM Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
 
 @app.route("/api/notify_admin_alert", methods=["POST"])
 def notify_admin_alert():
